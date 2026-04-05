@@ -5,6 +5,7 @@ Chrome extension that copies the full YouTube transcript to clipboard via contex
 ## Features
 
 - Right-click anywhere on a YouTube video page → **"📋 Скопировать транскрипт"**
+- Prepends video title and URL before the transcript body
 - Auto-opens the transcript panel if it's closed
 - Strips timestamps, copies clean text only
 - Preserves paragraph structure from the transcript panel

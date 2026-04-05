@@ -6,15 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] — 2025-04-05
+
+### Added
+
+- Video metadata prepended to copied transcript: clean video title (` - YouTube` suffix stripped) and page URL, separated from transcript body by a blank line
+
+---
+
 ## [1.1.0] — 2025-04-05
 
 ### Added
+
 - Support for new YouTube DOM layout (`transcript-segment-view-model` /
   `yt-core-attributed-string`) introduced in 2024 redesign
 - Paragraph formatting: each transcript segment is now separated by `\n\n`
   for readable output when pasting into editors, Notion, ChatGPT, etc.
 
 ### Fixed
+
 - Timestamps leaking into copied text (e.g. "26 минут 6 секунд", "7 секунд") —
   now explicitly removed via `[class*='Timestamp']` and `[aria-hidden='true']`
   selectors on cloned DOM nodes
@@ -26,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0] — 2025-04-04
 
 ### Added
+
 - Context menu item "📋 Скопировать транскрипт" on all `youtube.com` pages
 - `grabText()` — extracts transcript from `.ytSectionListRendererContents` /
   `ytd-transcript-segment-renderer` with 4 fallback selectors
