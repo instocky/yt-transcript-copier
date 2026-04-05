@@ -7,6 +7,7 @@ Chrome extension that copies the full YouTube transcript to clipboard via contex
 - Right-click anywhere on a YouTube video page → **"📋 Скопировать транскрипт"**
 - Auto-opens the transcript panel if it's closed
 - Strips timestamps, copies clean text only
+- Preserves paragraph structure from the transcript panel
 - Toast notification with word count on success
 - Works with Russian and English YouTube UI
 
@@ -29,7 +30,12 @@ Chrome extension that copies the full YouTube transcript to clipboard via contex
 ## How it works
 
 - `background.js` — registers the context menu item; on click, injects `content.js` into the active tab via `chrome.scripting.executeScript`
-- `content.js` — finds the transcript container (`.ytSectionListRendererContents`), extracts text from `ytd-transcript-segment-renderer` nodes, strips timestamp lines, copies to clipboard
+- `content.js` — finds transcript segments, strips timestamps, copies to clipboard with paragraph breaks
+
+**DOM support:**
+
+- New YouTube layout: `transcript-segment-view-model` → `yt-core-attributed-string`
+- Legacy layout: `.ytSectionListRendererContents` → `ytd-transcript-segment-renderer`
 
 **Auto-open chain** (triggered when transcript is missing or < 10 words):
 

@@ -90,7 +90,27 @@ async function waitForText(maxWait = 5000) {
 }
 
 function grabText() {
-  // Primary: container visible from DevTools
+  // New YT DOM (2024+): transcript-segment-view-model
+  const newSegments = document.querySelectorAll("transcript-segment-view-model");
+  if (newSegments.length > 0) {
+    return Array.from(newSegments)
+      .map(seg => {
+        // Skip timestamp nodes explicitly
+        const ts = seg.querySelector(".ytwTranscriptSegmentViewModelTimestampA11yLabel, [class*='Timestamp']");
+        const textEl = seg.querySelector("yt-core-attributed-string, [class*='SegmentText'], span[role='text']");
+        if (textEl) {
+          // Clone and remove any nested timestamp spans before reading text
+          const clone = textEl.cloneNode(true);
+          clone.querySelectorAll("[class*='Timestamp'], [aria-hidden='true']").forEach(el => el.remove());
+          return clone.innerText.trim();
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  // Legacy DOM: ytd-transcript-segment-renderer
   const container = document.querySelector(".ytSectionListRendererContents");
   if (container) {
     const segments = container.querySelectorAll("ytd-transcript-segment-renderer");
@@ -101,7 +121,7 @@ function grabText() {
           return textEl ? textEl.innerText.trim() : "";
         })
         .filter(Boolean)
-        .join(" ");
+        .join("\n\n");
     }
     return cleanText(container.innerText);
   }
@@ -115,7 +135,7 @@ function grabText() {
         return textEl ? textEl.innerText.trim() : "";
       })
       .filter(Boolean)
-      .join(" ");
+      .join("\n\n");
   }
 
   // Fallback: engagement panel
