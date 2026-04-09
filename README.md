@@ -11,6 +11,9 @@ Chrome extension that copies the full YouTube transcript to clipboard via contex
 - Preserves paragraph structure from the transcript panel
 - Toast notification with word count on success
 - Works with Russian and English YouTube UI
+- Right-click anywhere on a YouTube video page → **"⬇️ Сохранить как Markdown"**
+- Exports transcript as `.md` file with structured metadata (YAML frontmatter)
+- Automatic filename generation (safe for filesystem, supports transliteration)
 
 ## Installation
 
@@ -23,7 +26,9 @@ Chrome extension that copies the full YouTube transcript to clipboard via contex
 
 1. Open any YouTube video
 2. Right-click anywhere on the page
-3. Select **"📋 Скопировать транскрипт"**
+3. Select:
+   - **"📋 Скопировать транскрипт"** — copy to clipboard
+   - **"⬇️ Сохранить как Markdown"** — save as `.md` file
 4. The full transcript is now in your clipboard
 
 > If the transcript panel isn't open, the extension will attempt to open it automatically before copying.
@@ -58,6 +63,7 @@ Chrome extension that copies the full YouTube transcript to clipboard via contex
 | `scripting`                     | Inject content script on demand   |
 | `clipboardWrite`                | Copy transcript text to clipboard |
 | `host_permissions: youtube.com` | Access YouTube page DOM           |
+| `downloads`                     | Save transcript as Markdown file  |
 
 ## Known limitations
 

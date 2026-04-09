@@ -6,6 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] — TBD
+
+### Added
+
+- Segment-based transcript extraction (structured segments instead of plain text)
+- Optional timestamps in Markdown export
+
+### Changed
+
+- Internal transcript pipeline refactored:
+  - v1.3: plain text
+  - v1.4: structured segments
+
+---
+
+## [1.3.0] — 2026-04-09
+
+### Added
+
+- Export transcript as Markdown file via context menu ("⬇️ Сохранить как Markdown")
+- Filename generation with deterministic pattern:
+  - `yt_{author}_{slug}_{yyyy-mm-dd}.md`
+- YAML frontmatter metadata (title, author, url, date, video_id)
+- Chrome Downloads API integration (silent save to Downloads folder)
+
+### Improved
+
+- Filename normalization:
+  - transliteration (Cyrillic → Latin)
+  - safe character filtering for cross-platform compatibility
+
+### Notes
+
+- No changes to existing clipboard functionality
+- Export reuses the same extraction pipeline (no duplication)
+
+---
+
 ## [1.2.0] — 2025-04-05
 
 ### Added

@@ -231,3 +231,135 @@ function showToast(message) {
     setTimeout(() => toast.remove(), 400);
   }, 3000);
 }
+
+async function extractAndSaveMarkdown() {
+  let text = grabText();
+
+  if (!text || text.split(/\s+/).filter(Boolean).length < 10) {
+    showToast('⏳ Открываю транскрипт...');
+
+    const opened = await autoOpenTranscript();
+    if (!opened) {
+      showToast('❌ Не удалось открыть транскрипт');
+      return;
+    }
+
+    text = await waitForText();
+  }
+
+  if (!text) {
+    showToast('❌ Транскрипт не найден');
+    return;
+  }
+
+  const meta = buildMetadata();
+  const filename = buildFilename(meta);
+  const markdown = buildMarkdown(meta, text);
+
+  chrome.runtime.sendMessage({
+    type: 'DOWNLOAD_MD',
+    payload: {
+      filename,
+      content: markdown,
+    },
+  });
+
+  showToast(`⬇️ Сохранено: ${filename}`);
+}
+
+function buildMetadata() {
+  const title = document.title.replace(/ - YouTube$/, '').trim();
+  const url = location.href;
+
+  const video_id = new URL(url).searchParams.get('v') || 'unknown';
+
+  const channelEl = document.querySelector('ytd-channel-name a');
+  const channel = channelEl ? channelEl.innerText.trim() : 'unknown';
+
+  const date = new Date().toISOString().slice(0, 10);
+
+  return {
+    title,
+    channel,
+    url,
+    video_id,
+    date,
+  };
+}
+
+function transliterate(str) {
+  const map = {
+    а: 'a',
+    б: 'b',
+    в: 'v',
+    г: 'g',
+    д: 'd',
+    е: 'e',
+    ё: 'e',
+    ж: 'zh',
+    з: 'z',
+    и: 'i',
+    й: 'y',
+    к: 'k',
+    л: 'l',
+    м: 'm',
+    н: 'n',
+    о: 'o',
+    п: 'p',
+    р: 'r',
+    с: 's',
+    т: 't',
+    у: 'u',
+    ф: 'f',
+    х: 'kh',
+    ц: 'ts',
+    ч: 'ch',
+    ш: 'sh',
+    щ: 'shch',
+    ы: 'y',
+    э: 'e',
+    ю: 'yu',
+    я: 'ya',
+  };
+
+  return str
+    .toLowerCase()
+    .split('')
+    .map(ch => map[ch] || ch)
+    .join('');
+}
+
+function buildFilename(meta) {
+  const normalize = (str, maxLen) =>
+    transliterate(str)
+      .toLowerCase()
+      .replace(/[^a-z0-9 -]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .slice(0, maxLen);
+
+  const author = normalize(meta.channel || 'unknown', 50);
+  const slug = normalize(meta.title || `video-${meta.video_id}`, 80);
+
+  return `yt_${author}_${slug}_${meta.date}.md`;
+}
+
+function buildMarkdown(meta, text) {
+  return `---
+title: "${meta.title}"
+source: "youtube"
+author: "${meta.channel}"
+url: "${meta.url}"
+date: "${meta.date}"
+video_id: "${meta.video_id}"
+---
+
+# ${meta.title}
+
+## Summary
+
+## Transcript
+
+${text}
+`;
+}
