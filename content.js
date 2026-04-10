@@ -1,73 +1,168 @@
-async function extractAndCopy() {
-  // Step 1: try to grab already-rendered transcript
+﻿async function extractAndCopy() {
+  const artifact = await extractTranscriptArtifact();
+
+  if (!artifact.ok) {
+    showToast(artifact.error?.message || 'Не удалось получить транскрипт');
+    return artifact;
+  }
+
+  const textWithMeta = `${artifact.meta.title}\n${artifact.meta.url}\n\n${artifact.transcript}`;
+
+  await copyToClipboard(textWithMeta);
+  const wordCount = artifact.transcript.split(/\s+/).filter(Boolean).length;
+  showToast(`Скопировано! (~${wordCount} слов)`);
+  return artifact;
+}
+
+async function extractAndSaveMarkdown() {
+  const artifact = await extractTranscriptArtifact();
+
+  if (!artifact.ok) {
+    showToast(artifact.error?.message || 'Транскрипт не найден');
+    return artifact;
+  }
+
+  chrome.runtime.sendMessage({
+    type: 'DOWNLOAD_MD',
+    payload: {
+      filename: artifact.filename,
+      content: artifact.markdown,
+    },
+  });
+
+  showToast(`Сохранено: ${artifact.filename}`);
+  return artifact;
+}
+
+async function extractForBatch(expectedVideoId = null) {
+  return extractTranscriptArtifact(expectedVideoId);
+}
+
+async function extractTranscriptArtifact(expectedVideoId = null) {
+  if (expectedVideoId) {
+    const ready = await waitForVideoContext(expectedVideoId);
+    if (!ready) {
+      return buildErrorResult(
+        'PAGE_NOT_READY',
+        'Страница видео не успела перейти в ожидаемое состояние',
+        true
+      );
+    }
+  }
+
   let text = grabText();
 
-  // If text is missing or suspiciously short (< 10 words) — trigger auto-open
   if (!text || text.split(/\s+/).filter(Boolean).length < 10) {
-    showToast('⏳ Открываю транскрипт...');
+    showToast('Открываю транскрипт...');
 
     const opened = await autoOpenTranscript();
     if (!opened) {
-      showToast('❌ Не удалось открыть транскрипт');
-      return;
+      return buildErrorResult(
+        'NO_TRANSCRIPT',
+        'Не удалось открыть панель транскрипта',
+        false
+      );
     }
 
     text = await waitForText();
   }
 
   if (!text) {
-    showToast('❌ Транскрипт не найден');
-    return;
+    return buildErrorResult('NO_TRANSCRIPT', 'Транскрипт не найден', false);
   }
 
-  const title = document.title.replace(/ - YouTube$/, '').trim();
-  const url = location.href;
-  const textWithMeta = `${title}\n${url}\n\n${text}`;
+  const meta = buildMetadata();
+  const filename = buildFilename(meta);
+  const markdown = buildMarkdown(meta, text);
 
-  await copyToClipboard(textWithMeta);
-  const wordCount = text.split(/\s+/).filter(Boolean).length;
-  showToast(`✅ Скопировано! (~${wordCount} слов)`);
+  return {
+    ok: true,
+    filename,
+    markdown,
+    transcript: text,
+    meta,
+    error: null,
+  };
+}
+
+function buildErrorResult(type, message, retryable) {
+  return {
+    ok: false,
+    filename: null,
+    markdown: null,
+    transcript: null,
+    meta: buildMetadata(),
+    error: {
+      type,
+      message,
+      retryable,
+    },
+  };
+}
+
+async function waitForVideoContext(expectedVideoId, maxWait = 15000) {
+  const step = 500;
+  let waited = 0;
+
+  while (waited < maxWait) {
+    const currentVideoId = getCurrentVideoId();
+    const watchReady = Boolean(
+      document.querySelector('ytd-watch-flexy, ytd-watch-grid')
+    );
+    const titleReady = Boolean(document.title && document.title !== 'YouTube');
+
+    if (currentVideoId === expectedVideoId && watchReady && titleReady) {
+      await sleep(1200);
+      return true;
+    }
+
+    await sleep(step);
+    waited += step;
+  }
+
+  return false;
 }
 
 async function autoOpenTranscript() {
-  // Strategy 1: "Показать текст видео" button (visible in description area)
-  if (await clickButtonByText(/показать текст|show transcript/i)) return true;
-
-  // Strategy 2: expand description first, then find the button
-  const expandBtn = document.querySelector(
-    'tp-yt-paper-button#expand, ytd-text-inline-expander #expand, #description-inline-expander #expand'
-  );
-  if (expandBtn) {
-    expandBtn.click();
-    await sleep(600);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     if (await clickButtonByText(/показать текст|show transcript/i)) return true;
-  }
 
-  // Strategy 3: "..." more-actions menu under video
-  const moreBtn = document.querySelector(
-    'ytd-menu-renderer yt-icon-button#button button, #above-the-fold ytd-button-renderer button'
-  );
-  if (moreBtn) {
-    moreBtn.click();
-    await sleep(500);
-    if (await clickButtonByText(/transcript|расшифров|текст видео/i))
-      return true;
-  }
-
-  // Strategy 4: engagement panel button in top menu
-  const panelBtns = document.querySelectorAll(
-    'ytd-watch-metadata button, ytd-video-description-transcript-section-renderer button'
-  );
-  for (const btn of panelBtns) {
-    if (
-      /показать текст|transcript/i.test(
-        btn.innerText || btn.getAttribute('aria-label') || ''
-      )
-    ) {
-      btn.click();
-      await sleep(800);
-      return true;
+    const expandBtn = document.querySelector(
+      'tp-yt-paper-button#expand, ytd-text-inline-expander #expand, #description-inline-expander #expand'
+    );
+    if (expandBtn) {
+      expandBtn.click();
+      await sleep(700);
+      if (await clickButtonByText(/показать текст|show transcript/i)) return true;
     }
+
+    const moreBtn = document.querySelector(
+      'ytd-menu-renderer yt-icon-button#button button, #above-the-fold ytd-button-renderer button'
+    );
+    if (moreBtn) {
+      moreBtn.click();
+      await sleep(700);
+      if (await clickButtonByText(/transcript|расшифров|текст видео/i)) {
+        return true;
+      }
+    }
+
+    const panelBtns = document.querySelectorAll(
+      'ytd-watch-metadata button, ytd-video-description-transcript-section-renderer button'
+    );
+    for (const btn of panelBtns) {
+      if (
+        /показать текст|transcript/i.test(
+          btn.innerText || btn.getAttribute('aria-label') || ''
+        )
+      ) {
+        btn.click();
+        await sleep(900);
+        return true;
+      }
+    }
+
+    await sleep(1200 * attempt);
   }
 
   return false;
@@ -101,22 +196,16 @@ async function waitForText(maxWait = 5000) {
 }
 
 function grabText() {
-  // New YT DOM (2024+): transcript-segment-view-model
   const newSegments = document.querySelectorAll(
     'transcript-segment-view-model'
   );
   if (newSegments.length > 0) {
     return Array.from(newSegments)
       .map(seg => {
-        // Skip timestamp nodes explicitly
-        const ts = seg.querySelector(
-          ".ytwTranscriptSegmentViewModelTimestampA11yLabel, [class*='Timestamp']"
-        );
         const textEl = seg.querySelector(
           "yt-core-attributed-string, [class*='SegmentText'], span[role='text']"
         );
         if (textEl) {
-          // Clone and remove any nested timestamp spans before reading text
           const clone = textEl.cloneNode(true);
           clone
             .querySelectorAll("[class*='Timestamp'], [aria-hidden='true']")
@@ -129,7 +218,6 @@ function grabText() {
       .join('\n\n');
   }
 
-  // Legacy DOM: ytd-transcript-segment-renderer
   const container = document.querySelector('.ytSectionListRendererContents');
   if (container) {
     const segments = container.querySelectorAll(
@@ -147,7 +235,6 @@ function grabText() {
     return cleanText(container.innerText);
   }
 
-  // Fallback: any segment on page
   const segments = document.querySelectorAll('ytd-transcript-segment-renderer');
   if (segments.length > 0) {
     return Array.from(segments)
@@ -159,13 +246,11 @@ function grabText() {
       .join('\n\n');
   }
 
-  // Fallback: engagement panel
   const panel = document.querySelector(
     "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-searchable-transcript']"
   );
   if (panel) return cleanText(panel.innerText);
 
-  // Fallback: description section with transcript
   const descSection = document.querySelector(
     'ytd-video-description-transcript-section-renderer'
   );
@@ -199,7 +284,7 @@ async function copyToClipboard(text) {
 }
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function showToast(message) {
@@ -232,50 +317,12 @@ function showToast(message) {
   }, 3000);
 }
 
-async function extractAndSaveMarkdown() {
-  let text = grabText();
-
-  if (!text || text.split(/\s+/).filter(Boolean).length < 10) {
-    showToast('⏳ Открываю транскрипт...');
-
-    const opened = await autoOpenTranscript();
-    if (!opened) {
-      showToast('❌ Не удалось открыть транскрипт');
-      return;
-    }
-
-    text = await waitForText();
-  }
-
-  if (!text) {
-    showToast('❌ Транскрипт не найден');
-    return;
-  }
-
-  const meta = buildMetadata();
-  const filename = buildFilename(meta);
-  const markdown = buildMarkdown(meta, text);
-
-  chrome.runtime.sendMessage({
-    type: 'DOWNLOAD_MD',
-    payload: {
-      filename,
-      content: markdown,
-    },
-  });
-
-  showToast(`⬇️ Сохранено: ${filename}`);
-}
-
 function buildMetadata() {
   const title = document.title.replace(/ - YouTube$/, '').trim();
   const url = location.href;
-
   const video_id = new URL(url).searchParams.get('v') || 'unknown';
-
   const channelEl = document.querySelector('ytd-channel-name a');
   const channel = channelEl ? channelEl.innerText.trim() : 'unknown';
-
   const date = new Date().toISOString().slice(0, 10);
 
   return {
@@ -285,6 +332,14 @@ function buildMetadata() {
     video_id,
     date,
   };
+}
+
+function getCurrentVideoId() {
+  try {
+    return new URL(location.href).searchParams.get('v') || 'unknown';
+  } catch (_error) {
+    return 'unknown';
+  }
 }
 
 function transliterate(str) {
@@ -363,3 +418,7 @@ video_id: "${meta.video_id}"
 ${text}
 `;
 }
+
+window.extractAndCopy = extractAndCopy;
+window.extractAndSaveMarkdown = extractAndSaveMarkdown;
+window.extractForBatch = extractForBatch;
