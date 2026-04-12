@@ -10,6 +10,7 @@ Chrome extension that copies the full YouTube transcript to clipboard or exports
 - Strips timestamps and preserves paragraph structure
 - Works with Russian and English YouTube UI
 - Generates deterministic Markdown filenames
+- Uses green success toasts for copy/export completion and dark toasts for info/error states
 - Supports localhost batch orchestration through a short-lived Python server
 
 ## Installation

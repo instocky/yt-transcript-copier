@@ -10,7 +10,7 @@
 
   await copyToClipboard(textWithMeta);
   const wordCount = artifact.transcript.split(/\s+/).filter(Boolean).length;
-  showToast(`Скопировано! (~${wordCount} слов)`);
+  showToast(`Скопировано! (~${wordCount} слов)`, 'success');
   return artifact;
 }
 
@@ -30,7 +30,7 @@ async function extractAndSaveMarkdown() {
     },
   });
 
-  showToast(`Сохранено: ${artifact.filename}`);
+  showToast(`Сохранено: ${artifact.filename}`, 'success');
   return artifact;
 }
 
@@ -287,25 +287,28 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function showToast(message) {
+function showToast(message, type = 'default') {
   const existing = document.getElementById('yt-transcript-toast');
   if (existing) existing.remove();
 
   const toast = document.createElement('div');
   toast.id = 'yt-transcript-toast';
   toast.innerText = message;
+  const isSuccess = type === 'success';
   Object.assign(toast.style, {
     position: 'fixed',
     bottom: '32px',
     right: '32px',
-    background: '#0f0f0f',
+    background: isSuccess ? '#16a34a' : '#0f0f0f',
     color: '#fff',
     padding: '12px 20px',
     borderRadius: '8px',
     fontSize: '14px',
     fontFamily: 'Roboto, sans-serif',
     zIndex: '999999',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+    boxShadow: isSuccess
+      ? '0 4px 16px rgba(22,163,74,0.35)'
+      : '0 4px 16px rgba(0,0,0,0.4)',
     transition: 'opacity 0.4s',
     opacity: '1',
   });
