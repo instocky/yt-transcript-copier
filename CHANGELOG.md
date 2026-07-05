@@ -6,6 +6,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-07-05
+
+### Added
+
+- **🎙 Транскрибировать (LTS)** context-menu item on `youtube.com` pages — submits the current video URL to the local `local-transcription-service` (whisper.cpp STT on Mac Mini) and copies the resulting transcript to clipboard. Works for videos without built-in YouTube transcripts where the existing DOM-extraction path returns `NO_TRANSCRIPT`.
+- **In-title UI feedback** — green arrow SVG injected next to the YouTube title during polling (flashes 0.5s on each successful poll tick), replaced with a green ✓ checkmark on `done` or a red ✗ cross on `failed`. Visible from the watch page itself, no need to switch to extension popup.
+- **Offscreen document clipboard path** — `chrome.offscreen.createDocument({reasons: ['CLIPBOARD']})` used as the clipboard-write host from the MV3 service worker, where `navigator.clipboard.writeText()` is not reliably available (focus-policy / permission-policy limitations in offscreen). Two-level fallback inside the offscreen: `navigator.clipboard.writeText` → `document.execCommand('copy')` via temporary `<textarea>` (documented to be the only working path on tested Chrome build).
+- **MV3 reload race-condition guard** — `sendLtsStartToContent()` in the service worker retries `chrome.tabs.sendMessage` after `chrome.scripting.executeScript({target: {tabId}, files: ['content.js']})` when the content script on the target tab is stale (extension reloaded in `chrome://extensions` while the tab remained open). Eliminates the manual «reload YouTube tab» step previously required after every extension reload.
+- `auth.json` token-storage convention — gitignored JSON file in extension root, read via `chrome.runtime.getURL('auth.json')` and cached in module-scope. `auth.json.example` template committed.
+- `docs/backlog.md` — open follow-ups register (`BLG-001` and future).
+- `docs/tasks/TASK-LTS-Local-Transcription-Menu.md` — implementation-level task-doc with change-list, 12 acceptance criteria, 5 manual smoke scenarios.
+- `docs/adr/ADR-0006-lts-whisper-menu-integration.md` — architectural decision (Accepted 2026-07-05 after smoke gate PASS).
+- `docs/adr/ADR-012-local-transcription-pipeline.md` — vendored copy synced to `Accepted` (was `Proposed` until Tech Lead accepted upstream in service repo).
+
+### Changed
+
+- `manifest.json` — added `offscreen` permission, `http://127.0.0.1:8766/*` and `http://192.168.0.99:8766/*` host_permissions (loopback + LAN modes for `local-transcription-service`), explicit `action` block (was missing — caused `Cannot read properties of undefined (reading 'setBadgeText')` until added). Version bumped 1.4.1 → 1.5.0.
+- `background.js` — added LTS module (~270 lines): token load via `fetch(chrome.runtime.getURL('auth.json'))`, offscreen lifecycle (`ensureOffscreen` with `hasDocument` check), `ltsFetch`/`ltsSubmit`/`ltsGetJobStatus`/`ltsGetTranscript`/`ltsAck`/`ltsWriteClipboard` helpers, `handleLtsTranscribeClick`/`handleLtsResultReady` entry points, dispatch on `onClicked` and `onMessage`. Service-worker polling event handlers added for `lts-poll` / `lts-result-ready` / `lts-failed`.
+- `content.js` — added LTS polling section (~80 lines): `chrome.runtime.onMessage` listener for `{type: 'lts-start', jobId}` that starts `setInterval(5000)`, sends `lts-poll` to SW, on `done` sends `lts-result-ready`, on `failed` sends `lts-failed`; in-title SVG injection (`ltsFindTitle` / `ltsMakeSVG` / `ltsShowInTitle` / `ltsFlash`) wired into the poll lifecycle.
+- `README.md` — added 🎙 Транскрибировать (LTS) bullet to Features, new `First-time setup` section with `cp auth.json.example auth.json` instructions and warning about token length / no-op on missing file.
+- `.gitignore` — added `auth.json` rule so the real token never commits.
+
+### Improved
+
+- Polling cadence now matches the contractually-recommended 5s interval (previously impossible because polling host was not yet wired).
+- UI feedback is now colocated with the content (in-title), so the user does not need to switch tabs or watch the extension icon to see job progress.
+- Lifecycle management for offscreen document reuses an existing instance on subsequent jobs (`chrome.offscreen.hasDocument()` check), avoiding repeated `createDocument` calls.
+
+### Notes
+
+- ADR-0006 acceptance gate passed via the `execCommand` fallback path on the tested Chrome build. The primary `navigator.clipboard.writeText()` path inside offscreen was documented as the intent, but the fallback proved to be the actual working path in practice. Two-level fallback is now mandatory in the offscreen clipboard pattern.
+- Debug logging (`[lts]` prefix, ~30 statements across `background.js` and `content.js`) intentionally retained in 1.5.0 for first-deploy diagnostics. Cleanup is tracked as `BLG-001` in `docs/backlog.md` for a future minor release.
+- Service-side job lifecycle: jobs created by extension clicks are persisted in the service's SQLite queue until `POST /jobs/{id}/ack` is called. The race-condition guard above ensures ack happens reliably; if a stale-content-script path still somehow causes a job to be orphaned (submit OK, content never polls), the transcript remains on disk until manual operator cleanup — no silent data loss.
+
+---
+
 ## [1.4.1] - 2026-04-12
 
 ### Changed
