@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.3] - 2026-07-05
+
+### Fixed
+
+- **Stale in-title indicator after SPA navigation.** When the user clicked a related video (or any SPA navigation — back / forward, watch-page → search → watch, watch-page → channel → watch), the green checkmark (✓) or red cross (✗) from the previous LTS job remained next to the new video's title. YouTube is a single-page app, so navigation does not trigger a full page reload and the content-script instance — including the injected `.lts-arrow` SVG — survived across navigations. The indicator visually belonged to the previous job but appeared to be the new job's state, which is misleading.
+
+### Notes
+
+- **Fix location**: `content.js` — added `watchLtsUrlChanges()` (~25 lines) called once at content-script load. Three signal sources cover all SPA navigation paths:
+  - `history.pushState` patch — YouTube uses this for forward navigation (related-video clicks, watch-page → search).
+  - `history.replaceState` patch — YouTube uses this for in-place updates (e.g., `t=` parameter changes without a full nav).
+  - `popstate` listener — browser back / forward.
+  - `yt-navigate-finish` listener — YouTube custom event fired after SPA navigation completes and the new watch-page DOM has stabilised. Acts as a fallback in case a future YouTube update overrides the `pushState` / `replaceState` patches.
+- **Cleanup action**: on any URL change, the existing `ltsRemoveIndicator()` helper is called — it locates the title via the same fallback selector chain used by `ltsFindTitle()` and removes any `.lts-arrow` element from its parent. No state mutation, no polling stop (polling is already stopped on terminal state — `ltsStopPolling()` is called inside the `ltsTick` handler on `done` and `failed`).
+- **Idempotent**: `ltsRemoveIndicator()` is a no-op when no `.lts-arrow` exists, so re-firing the cleanup on overlapping signals (e.g., `popstate` immediately followed by `yt-navigate-finish`) does not throw.
+- **No new permissions** for this release — relies on the same `tabs` permission and YouTube `host_permissions` already declared in 1.5.0. Version bumped 1.5.2 → 1.5.3.
+
+---
+
 ## [1.5.2] - 2026-07-05
 
 ### Added

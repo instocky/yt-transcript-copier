@@ -605,3 +605,36 @@ window.addEventListener('beforeunload', () => {
     ltsStopPolling();
   }
 });
+
+// URL change watcher — YouTube is an SPA, so navigating to a related video
+// does NOT trigger a full page reload and the content-script instance
+// survives. Without this, the green checkmark from the previous LTS job
+// would sit next to the new title indefinitely. Three signal sources cover
+// all SPA navigation paths:
+//   - history.pushState/replaceState patch — YouTube's own navigation calls
+//   - popstate — browser back/forward
+//   - yt-navigate-finish — YouTube custom event, fires after DOM stabilizes
+function watchLtsUrlChanges() {
+  let lastUrl = location.href;
+  const onUrlChange = () => {
+    if (location.href === lastUrl) return;
+    lastUrl = location.href;
+    console.log('[lts] URL changed, removing indicator, newUrl=', lastUrl);
+    ltsRemoveIndicator();
+  };
+  const origPush = history.pushState.bind(history);
+  const origReplace = history.replaceState.bind(history);
+  history.pushState = function (...args) {
+    const r = origPush(...args);
+    onUrlChange();
+    return r;
+  };
+  history.replaceState = function (...args) {
+    const r = origReplace(...args);
+    onUrlChange();
+    return r;
+  };
+  window.addEventListener('popstate', onUrlChange);
+  window.addEventListener('yt-navigate-finish', onUrlChange);
+}
+watchLtsUrlChanges();

@@ -117,6 +117,7 @@ python .\batch_server.py .\urls.txt
 - YouTube DOM changes may break extraction
 - MV3 background polling can introduce up to 30 seconds of idle-start latency
 - The extension still depends on Chrome Downloads API for the file save path
+- **LTS in-title indicator cleanup**: the green arrow / checkmark / cross is removed automatically on SPA navigation (related-video clicks, back/forward, watch-page transitions) via `watchLtsUrlChanges()` in `content.js`. A full page reload is not required between consecutive LTS jobs on the same tab — the previous job's indicator is cleared when the URL changes.
 
 ## License
 
