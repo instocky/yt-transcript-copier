@@ -923,6 +923,9 @@ async function handleLtsTranscribeClick(tabId, tabUrl) {
       );
     }
     await setLtsBadge(tabId, LTS_BADGE.FAILED);
+    chrome.tabs
+      .sendMessage(tabId, { type: 'lts-clipboard-failed' })
+      .catch(() => {});
   }
 }
 
@@ -934,11 +937,24 @@ async function handleLtsResultReady(tabId, jobId) {
     await ltsWriteClipboard(payload);
     await setLtsBadge(tabId, LTS_BADGE.DONE);
     await ltsAck(jobId);
-    console.log('[lts] result-ready: completed ok, job_id=', jobId, 'bytes=', payload.length);
+    // Fire-and-forget toast signal — content shows "Скопировано! (~NN слов)"
+    // matching the DOM-extract path. sendMessage rejects if tab is gone
+    // or content script is stale; either way the user is not on the page,
+    // so silent failure is the correct outcome.
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    chrome.tabs
+      .sendMessage(tabId, { type: 'lts-clipboard-done', wordCount })
+      .catch(err =>
+        console.warn('[lts] toast: send failed (tab closed?):', err?.message || err)
+      );
+    console.log('[lts] result-ready: completed ok, job_id=', jobId, 'bytes=', payload.length, 'words=', wordCount);
     return true;
   } catch (err) {
     console.error('[lts] result-ready: failed,', err);
     await setLtsBadge(tabId, LTS_BADGE.AUTH_ERROR);
+    chrome.tabs
+      .sendMessage(tabId, { type: 'lts-clipboard-failed' })
+      .catch(() => {});
     return false;
   }
 }

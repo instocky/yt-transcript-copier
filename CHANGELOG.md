@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.2] - 2026-07-05
+
+### Added
+
+- **Toast notifications for the LTS menu item** — the `🎙 Транскрибировать (LTS)` flow now shows the same in-page toast that the DOM-extract copy path has used since 1.0.0: a green pill in the bottom-right corner on success (`Скопировано! (~NN слов)`) and a dark pill on failure (`Ошибка LTS транскрипции`). Previously LTS completion was signalled only via the toolbar badge (`✓` / `✗`) and the in-title indicator — adding the toast brings LTS UX to full parity with the built-in copy action.
+
+### Notes
+
+- **Signal pattern**: background sends `chrome.tabs.sendMessage(tabId, {type: 'lts-clipboard-done' | 'lts-clipboard-failed', wordCount?})` to the content script after `ltsWriteClipboard` returns (success path) or after `setLtsBadge(AUTH_ERROR | FAILED)` (two failure paths — `/result` HTTP error and submit/notify error in `handleLtsTranscribeClick`). Content script's existing `chrome.runtime.onMessage` listener picks it up and calls `showToast(...)`. Three send sites, two listener branches.
+- **Word count** is computed in the background (`text.split(/\s+/).filter(Boolean).length`) so the raw transcript does not have to round-trip back to content for a single integer.
+- **Failure coverage**:
+  - `/jobs/{id}/result` HTTP error or auth failure during `handleLtsResultReady` → toast `Ошибка LTS транскрипции` + badge `⚠`.
+  - Submit/network failure in `handleLtsTranscribeClick` → toast `Ошибка LTS транскрипции` + badge `✗` + SW log.
+- **Silent degradation**: every `chrome.tabs.sendMessage` is wrapped in `.catch(...)`. If the YouTube tab was closed between terminal state and the toast signal, or the content script listener is stale (MV3 reload edge case), the sendMessage rejects and we log at `console.warn` — no exception escapes to the SW lifecycle.
+- **No new permissions** for this release — relies on the same `tabs` / YouTube `host_permissions` already declared in 1.5.0. Version bumped 1.5.1 → 1.5.2.
+
+---
+
 ## [1.5.1] - 2026-07-05
 
 ### Changed

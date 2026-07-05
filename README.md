@@ -6,7 +6,7 @@ Chrome extension that copies the full YouTube transcript to clipboard or exports
 
 - Right-click anywhere on a YouTube video page -> copy transcript to clipboard (formatted as `title` + URL + blank line + transcript body)
 - Right-click anywhere on a YouTube video page -> save transcript as `.md`
-- Right-click anywhere on a YouTube video page -> 🎙 Транскрибировать (LTS) for videos without built-in transcript (uses local STT service on Mac Mini) — clipboard payload uses the same `title` + URL + transcript format as the built-in copy action, so paste output is identical regardless of which menu item generated it
+- Right-click anywhere on a YouTube video page -> 🎙 Транскрибировать (LTS) for videos without built-in transcript (uses local STT service on Mac Mini) — clipboard payload uses the same `title` + URL + transcript format as the built-in copy action, so paste output is identical regardless of which menu item generated it; shows the same green in-page toast as the built-in copy action when transcription completes (`Скопировано! (~NN слов)`)
 - Auto-opens the transcript panel if it's closed
 - Strips timestamps and preserves paragraph structure
 - Works with Russian and English YouTube UI

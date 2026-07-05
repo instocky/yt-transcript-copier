@@ -577,6 +577,14 @@ async function ltsTick(jobId) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === 'lts-clipboard-done' && typeof msg.wordCount === 'number') {
+    showToast(`Скопировано! (~${msg.wordCount} слов)`, 'success');
+    return false;
+  }
+  if (msg?.type === 'lts-clipboard-failed') {
+    showToast('Ошибка LTS транскрипции', 'default');
+    return false;
+  }
   if (msg?.type !== 'lts-start' || typeof msg.jobId !== 'string') {
     return false;
   }
