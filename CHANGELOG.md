@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.1] - 2026-07-05
+
+### Changed
+
+- **LTS clipboard format now matches the DOM-extract copy path.** Previously the `🎙 Транскрибировать (LTS)` menu item copied only the raw transcript body returned by the STT service. Both copy-style menu items now produce the same payload shape: `{title}\n{url}\n\n{transcript}` — title has the ` - YouTube` suffix stripped, URL is the watch URL captured at click time. Result: pasted output is identical regardless of which menu item generated it, so downstream consumers (notes apps, chat prompts, batch archive tooling) do not need to special-case the LTS source.
+
+### Notes
+
+- **Snapshot timing**: title and URL are captured at click time (`chrome.tabs.get(tabId)` inside `handleLtsTranscribeClick`) and stored in a module-scope `ltsSubmitMeta` Map keyed by tabId. If the user navigates to a different video while polling is in progress, the original click-time title is preserved — matches the DOM-extract behaviour where the title is read on click.
+- **Edge cases**:
+  - Tab closed before snapshot: snapshot falls back to `{title:'', url: tabUrl}`; URL is preserved if known.
+  - Tab closed during polling: `chrome.tabs.onRemoved` listener cleans the Map entry. `ltsFormatTranscript` then receives no meta and copies the raw transcript only — user waited for the result, no silent data loss.
+  - Tab navigated away from YouTube: snapshot already captured → correct title and original URL.
+  - Snapshot empty (no title, no URL): filter collapses to empty list → raw transcript only.
+- **No manifest changes** for this release — `"tabs"` permission and YouTube `host_permissions` were already declared in 1.5.0, which is what the snapshot lookup relies on. Version bumped 1.5.0 → 1.5.1.
+
+---
+
 ## [1.5.0] - 2026-07-05
 
 ### Added

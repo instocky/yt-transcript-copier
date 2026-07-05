@@ -27,6 +27,13 @@ const LTS_MIN_TOKEN_LEN = 16;
 // null means "auth.json missing or invalid" — menu item becomes no-op.
 let LTS_AUTH_TOKEN = null;
 
+// Snapshot of tab.title + tab.url captured at lts-transcribe click time.
+// Used by handleLtsResultReady so the clipboard payload matches the format
+// of the DOM-extract "Скопировать транскрипт" path:
+//   {title}\n{url}\n\n{transcript}
+// Cleared on terminal state (done/failed) and on tab.onRemoved.
+const ltsSubmitMeta = new Map();
+
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureContextMenus();
   await ensureAlarm();
@@ -112,6 +119,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   return false;
+});
+
+// Safety net: if the user closes the YouTube tab while LTS is polling,
+// drop the snapshot so the Map doesn't grow unbounded. handleLtsResultReady
+// already deletes on terminal state, this covers the case where polling
+// never finishes because the tab is gone.
+chrome.tabs.onRemoved.addListener(tabId => {
+  if (ltsSubmitMeta.has(tabId)) {
+    console.log('[lts] tab removed: dropping snapshot, tabId=', tabId);
+    ltsSubmitMeta.delete(tabId);
+  }
 });
 
 async function bootstrapBackground() {
@@ -873,6 +891,22 @@ async function handleLtsTranscribeClick(tabId, tabUrl) {
     console.warn('[lts] menu click: not a YouTube host, ignored');
     return;
   }
+  // Snapshot tab.title at click time so the eventual clipboard payload matches
+  // what "Скопировать транскрипт" would have produced (DOM-extract reads title
+  // on click). If the user changes the video mid-poll we still report the
+  // title they actually clicked on. Best-effort: if tab lookup fails (closed
+  // before snapshot), fall back to url-only.
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    ltsSubmitMeta.set(tabId, {
+      title: (tab?.title || '').replace(/ - YouTube$/, '').trim(),
+      url: tabUrl || tab?.url || '',
+    });
+    console.log('[lts] menu click: snapshot title=', ltsSubmitMeta.get(tabId).title);
+  } catch (snapErr) {
+    console.warn('[lts] menu click: tab snapshot failed (closed?):', snapErr?.message || snapErr);
+    ltsSubmitMeta.set(tabId, { title: '', url: tabUrl || '' });
+  }
   let jobId = null;
   try {
     await setLtsBadge(tabId, LTS_BADGE.PROCESSING);
@@ -896,15 +930,33 @@ async function handleLtsResultReady(tabId, jobId) {
   console.log('[lts] result-ready: tabId=', tabId, 'job_id=', jobId);
   try {
     const text = await ltsGetTranscript(jobId);
-    await ltsWriteClipboard(text);
+    const payload = await ltsFormatTranscript(tabId, text);
+    await ltsWriteClipboard(payload);
     await setLtsBadge(tabId, LTS_BADGE.DONE);
     await ltsAck(jobId);
-    console.log('[lts] result-ready: completed ok, job_id=', jobId);
+    console.log('[lts] result-ready: completed ok, job_id=', jobId, 'bytes=', payload.length);
     return true;
   } catch (err) {
     console.error('[lts] result-ready: failed,', err);
     await setLtsBadge(tabId, LTS_BADGE.AUTH_ERROR);
     return false;
   }
+}
+
+// Prepend {title}\n{url}\n to the raw transcript so LTS clipboard format
+// matches the DOM-extract "Скопировать транскрипт" path. Snapshot was
+// captured at click time in handleLtsTranscribeClick. If the tab is gone or
+// snapshot is empty (closed before snapshot, no title, no url), fall back
+// to the raw transcript — user waited for it, don't lose the result.
+async function ltsFormatTranscript(tabId, text) {
+  const meta = ltsSubmitMeta.get(tabId);
+  if (meta) ltsSubmitMeta.delete(tabId);
+  const lines = [meta?.title, meta?.url].filter(Boolean);
+  if (lines.length === 0) {
+    console.log('[lts] format: no snapshot meta, transcript only, length=', text.length);
+    return text;
+  }
+  console.log('[lts] format: title=', lines[0], 'has_url=', Boolean(lines[1]));
+  return `${lines.join('\n')}\n\n${text}`;
 }
 

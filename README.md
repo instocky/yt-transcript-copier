@@ -4,15 +4,32 @@ Chrome extension that copies the full YouTube transcript to clipboard or exports
 
 ## Features
 
-- Right-click anywhere on a YouTube video page -> copy transcript to clipboard
+- Right-click anywhere on a YouTube video page -> copy transcript to clipboard (formatted as `title` + URL + blank line + transcript body)
 - Right-click anywhere on a YouTube video page -> save transcript as `.md`
-- Right-click anywhere on a YouTube video page -> 🎙 Транскрибировать (LTS) for videos without built-in transcript (uses local STT service on Mac Mini)
+- Right-click anywhere on a YouTube video page -> 🎙 Транскрибировать (LTS) for videos without built-in transcript (uses local STT service on Mac Mini) — clipboard payload uses the same `title` + URL + transcript format as the built-in copy action, so paste output is identical regardless of which menu item generated it
 - Auto-opens the transcript panel if it's closed
 - Strips timestamps and preserves paragraph structure
 - Works with Russian and English YouTube UI
 - Generates deterministic Markdown filenames
 - Uses green success toasts for copy/export completion and dark toasts for info/error states
 - Supports localhost batch orchestration through a short-lived Python server
+
+## Clipboard payload format
+
+Both copy-style menu items produce the same three-line header + transcript body:
+
+```
+{title}
+{url}
+
+{transcript}
+```
+
+- `title` has the ` - YouTube` suffix stripped (matches `document.title` after YouTube's own trimming).
+- `url` is the watch URL captured at the moment the menu item was clicked, so changing videos while a job is in flight does not alter the clipboard header.
+- For the DOM-extract path the header is read on click (sync). For the LTS path the header is snapshotted via `chrome.tabs.get(tabId)` on click and replayed when the job reaches `done`.
+
+If the YouTube tab was closed before the snapshot could be taken, or the tab navigated away and the snapshot ended up empty, the extension falls back to copying the raw transcript body only — the user waited for it, so the result is still delivered.
 
 ## First-time setup (LTS menu)
 
