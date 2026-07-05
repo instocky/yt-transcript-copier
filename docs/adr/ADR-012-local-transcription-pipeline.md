@@ -1,11 +1,17 @@
 # ADR-012: Local Transcription Pipeline
 
-| Field      | Value                |
-|------------|----------------------|
-| Status     | Proposed             |
-| Date       | 2026-07-03           |
-| Author     | Mavis                |
-| Deciders   | TBD                  |
+| Field    | Value                                         |
+| -------- | --------------------------------------------- |
+| Status   | Accepted                                      |
+| Date     | 2026-07-03 (proposed) / 2026-07-05 (accepted) |
+| Author   | Mavis                                         |
+| Deciders | Tech Lead                                     |
+
+> **Vendored копия.** Оригинал принят в репозитории сервиса
+> (`0703_local-transcription-service`); vendored-копия в этом репо
+> синхронизирована со статусом `Accepted` 2026-07-05. При расхождении
+> текстов — оригинал в репо сервиса wins; vendored-копия обновляется
+> отдельной задачей.
 
 ## Context
 
@@ -78,15 +84,15 @@ Transcript Result
 
 Use a managed STT API (e.g., Whisper API, Deepgram, AssemblyAI).
 
-**Rejected.** Violates the *Local-first* and *No cloud inference* drivers. Introduces recurring cost, external availability dependency, and a data-egress boundary.
+**Rejected.** Violates the _Local-first_ and _No cloud inference_ drivers. Introduces recurring cost, external availability dependency, and a data-egress boundary.
 
 ### Alternative B: Browser-side STT via WebAssembly
 
 Run a speech-to-text model directly in the browser through a WebAssembly port.
 
-**Rejected.** Model size and per-tab memory footprint are impractical for general use; contradicts *Minimal browser logic*.
+**Rejected.** Model size and per-tab memory footprint are impractical for general use; contradicts _Minimal browser logic_.
 
-### Alternative C: Local Compute Node *(chosen)*
+### Alternative C: Local Compute Node _(chosen)_
 
 A persistently available local node executes the full pipeline; the extension acts as a thin client.
 

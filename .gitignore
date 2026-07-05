@@ -1,3 +1,7 @@
 # User
 notes.md
 content_v*.js
+
+# LTS extension secrets (real token file — keep out of git)
+# See docs/tasks/TASK-LTS-Local-Transcription-Menu.md and ADR-0006.
+auth.json

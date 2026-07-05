@@ -6,12 +6,29 @@ Chrome extension that copies the full YouTube transcript to clipboard or exports
 
 - Right-click anywhere on a YouTube video page -> copy transcript to clipboard
 - Right-click anywhere on a YouTube video page -> save transcript as `.md`
+- Right-click anywhere on a YouTube video page -> 🎙 Транскрибировать (LTS) for videos without built-in transcript (uses local STT service on Mac Mini)
 - Auto-opens the transcript panel if it's closed
 - Strips timestamps and preserves paragraph structure
 - Works with Russian and English YouTube UI
 - Generates deterministic Markdown filenames
 - Uses green success toasts for copy/export completion and dark toasts for info/error states
 - Supports localhost batch orchestration through a short-lived Python server
+
+## First-time setup (LTS menu)
+
+The 🎙 Транскрибировать (LTS) menu item uses a local STT service
+(`local-transcription-service`, see `../_Others/0703_local-transcription-service/README.md`).
+Without one-time setup the menu item is a no-op and the extension badge shows `⚠`.
+
+1. Copy the template: `cp auth.json.example auth.json`
+2. Substitute the real `LTS_AUTH_TOKEN` value from `$HOME/.lts-env` on the Mac Mini
+   (the `LTS_AUTH_TOKEN` variable, length ≥16 chars).
+3. Reload the extension in `chrome://extensions`.
+
+The `auth.json` file is in `.gitignore` — it must not be committed. The
+`auth.json.example` template in the repo contains only a placeholder.
+If `auth.json` is missing or the token is too short, the menu click is a
+no-op and the SW console logs `[lts] failed to load auth.json`.
 
 ## Installation
 

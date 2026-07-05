@@ -7,9 +7,31 @@ const DOWNLOAD_TIMEOUT_MS = 30000;
 const ALARM_PERIOD_MINUTES = 0.5;
 const FALLBACK_INTER_JOB_DELAY_MS = 7000;
 
+// --- LTS (Local Transcription Service) integration (ADR-0006, TASK-LTS) ---
+const LTS_BASE_URL = 'http://192.168.0.99:8766';
+const LTS_YT_HOSTS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'youtu.be',
+]);
+const LTS_BADGE = {
+  PROCESSING: '⏳',
+  DONE: '✓',
+  FAILED: '✗',
+  AUTH_ERROR: '⚠',
+};
+const LTS_MIN_TOKEN_LEN = 16;
+
+// Module-scope cached token. Loaded once at onInstalled/onStartup.
+// null means "auth.json missing or invalid" — menu item becomes no-op.
+let LTS_AUTH_TOKEN = null;
+
 chrome.runtime.onInstalled.addListener(async () => {
   await ensureContextMenus();
   await ensureAlarm();
+  await loadAuthToken();
+  await clearLtsBadge();
   void processBatchQueue();
 });
 
@@ -33,9 +55,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'save-yt-markdown') {
     void runNamedActionOnTab(tab.id, 'extractAndSaveMarkdown');
   }
+
+  if (info.menuItemId === 'lts-transcribe') {
+    void handleLtsTranscribeClick(tab.id, tab.url);
+  }
 });
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === 'DOWNLOAD_MD') {
     void downloadMarkdown(msg.payload.filename, msg.payload.content)
       .then(result => sendResponse(result))
@@ -48,12 +74,51 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg?.type === 'lts-poll' && typeof msg.jobId === 'string') {
+    console.log('[lts] onMessage: lts-poll, jobId=', msg.jobId, 'from tabId=', sender?.tab?.id);
+    void ltsGetJobStatus(msg.jobId)
+      .then(state => {
+        console.log('[lts] onMessage: lts-poll reply, jobId=', msg.jobId, 'status=', state.status);
+        sendResponse({ ok: true, status: state.status, error: state.error });
+      })
+      .catch(error => {
+        console.error('[lts] onMessage: lts-poll failed,', error);
+        sendResponse({ ok: false, error: String(error) });
+      });
+    return true;
+  }
+
+  if (msg?.type === 'lts-result-ready' && typeof msg.jobId === 'string') {
+    const tabId = sender?.tab?.id;
+    console.log('[lts] onMessage: lts-result-ready, jobId=', msg.jobId, 'tabId=', tabId);
+    void handleLtsResultReady(tabId, msg.jobId)
+      .then(ok => {
+        console.log('[lts] onMessage: lts-result-ready reply, ok=', ok);
+        sendResponse({ ok });
+      })
+      .catch(error => {
+        console.error('[lts] result handling failed:', error);
+        sendResponse({ ok: false, error: String(error) });
+      });
+    return true;
+  }
+
+  if (msg?.type === 'lts-failed' && typeof msg.jobId === 'string') {
+    const tabId = sender?.tab?.id;
+    console.log('[lts] onMessage: lts-failed, jobId=', msg.jobId, 'tabId=', tabId);
+    void setLtsBadge(tabId, LTS_BADGE.FAILED);
+    sendResponse({ ok: true });
+    return true;
+  }
+
   return false;
 });
 
 async function bootstrapBackground() {
   await ensureContextMenus();
   await ensureAlarm();
+  await loadAuthToken();
+  await clearLtsBadge();
 
   const state = await getRunnerState();
   if (state.processing) {
@@ -76,6 +141,14 @@ async function ensureContextMenus() {
   chrome.contextMenus.create({
     id: 'save-yt-markdown',
     title: '⬇️ Сохранить как Markdown',
+    contexts: ['page'],
+    documentUrlPatterns: ['https://www.youtube.com/*'],
+  });
+
+  // ADR-0006 / TASK-LTS — local STT fallback for videos without built-in transcript.
+  chrome.contextMenus.create({
+    id: 'lts-transcribe',
+    title: '🎙 Транскрибировать (LTS)',
     contexts: ['page'],
     documentUrlPatterns: ['https://www.youtube.com/*'],
   });
@@ -568,5 +641,224 @@ function getVideoIdFromUrl(url) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ============================================================================
+// LTS (Local Transcription Service) integration — ADR-0006 / TASK-LTS
+// ============================================================================
+//
+// Architecture (see ADR-0006 §0):
+//   - content script polls job status every 5s via `lts-poll` messages
+//   - on done, content sends `lts-result-ready`; SW fetches transcript text,
+//     writes it to clipboard via an offscreen document (navigator.clipboard
+//     works without user gesture in offscreen reason='CLIPBOARD' context),
+//     then fires `POST /ack`
+//   - on failed, content sends `lts-failed`; SW just paints badge ✗
+//
+// Token storage: `auth.json` (gitignored) at extension root, read once via
+// fetch on `chrome.runtime.getURL('auth.json')` and cached in LTS_AUTH_TOKEN
+// (module scope). MV3 SW supports fetch() to chrome-extension:// URLs
+// (same-origin extension resources), but XMLHttpRequest is NOT defined in
+// SW context — must use fetch.
+// If absent/invalid, LTS_AUTH_TOKEN stays null and the menu item
+// becomes a no-op with badge ⚠.
+//
+// All LTS operations log to console with `[lts]` prefix for debugging.
+// Filter in DevTools console: `[lts]`.
+
+async function loadAuthToken() {
+  const url = chrome.runtime.getURL('auth.json');
+  console.log('[lts] loadAuthToken: start, url=', url);
+  try {
+    const resp = await fetch(url);
+    console.log('[lts] loadAuthToken: fetch resolved, status=', resp.status, 'ok=', resp.ok);
+    if (!resp.ok) {
+      throw new Error(`auth.json HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    const token = data?.LTS_AUTH_TOKEN;
+    if (typeof token !== 'string' || token.length < LTS_MIN_TOKEN_LEN) {
+      throw new Error(
+        `LTS_AUTH_TOKEN missing or shorter than ${LTS_MIN_TOKEN_LEN} chars (got type=${typeof token}, len=${token?.length})`
+      );
+    }
+    LTS_AUTH_TOKEN = token;
+    console.log('[lts] loadAuthToken: token loaded, length=', token.length);
+  } catch (err) {
+    console.error('[lts] failed to load auth.json:', err);
+    LTS_AUTH_TOKEN = null;
+  }
+}
+
+async function ensureOffscreen() {
+  const alreadyExists = await chrome.offscreen.hasDocument();
+  console.log('[lts] ensureOffscreen: hasDocument=', alreadyExists);
+  if (alreadyExists) return;
+  console.log('[lts] ensureOffscreen: creating offscreen document');
+  await chrome.offscreen.createDocument({
+    url: 'offscreen.html',
+    reasons: ['CLIPBOARD'],
+    justification: 'Write LTS transcript to clipboard from MV3 SW context',
+  });
+  console.log('[lts] ensureOffscreen: created');
+}
+
+async function setLtsBadge(tabId, text) {
+  console.log('[lts] badge: tabId=', tabId, 'text=', JSON.stringify(text));
+  if (typeof tabId === 'number') {
+    await chrome.action.setBadgeText({ tabId, text });
+  } else {
+    await chrome.action.setBadgeText({ text });
+  }
+}
+
+async function clearLtsBadge() {
+  console.log('[lts] badge: clear (global)');
+  await chrome.action.setBadgeText({ text: '' });
+}
+
+function isYouTubeHost(urlString) {
+  try {
+    const host = new URL(urlString).host;
+    return LTS_YT_HOSTS.has(host);
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function ltsFetch(path, init = {}) {
+  if (!LTS_AUTH_TOKEN) {
+    throw new Error('LTS_AUTH_TOKEN not loaded — auth.json missing or invalid');
+  }
+  const headers = {
+    'X-Auth-Token': LTS_AUTH_TOKEN,
+    ...(init.headers || {}),
+  };
+  if (init.body && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const url = `${LTS_BASE_URL}${path}`;
+  const method = init.method || 'GET';
+  console.log('[lts] fetch:', method, url);
+  const resp = await fetch(url, { ...init, headers });
+  console.log('[lts] fetch:', method, url, '->', resp.status);
+  return resp;
+}
+
+async function ltsSubmit(videoUrl) {
+  console.log('[lts] submit: videoUrl=', videoUrl);
+  const resp = await ltsFetch('/jobs', {
+    method: 'POST',
+    body: JSON.stringify({ video_url: videoUrl }),
+  });
+  if (!resp.ok) {
+    const errBody = await safeReadJson(resp);
+    const errMsg = `POST /jobs ${resp.status}: ${errBody?.message || errBody?.detail || resp.statusText}`;
+    console.error('[lts] submit: failed,', errMsg, 'body=', errBody);
+    throw new Error(errMsg);
+  }
+  const data = await resp.json();
+  if (typeof data.job_id !== 'string') {
+    console.error('[lts] submit: no job_id in response, body=', data);
+    throw new Error('POST /jobs returned no job_id');
+  }
+  console.log('[lts] submit: ok, job_id=', data.job_id, 'status=', data.status, 'poll_url=', data.poll_url);
+  return data.job_id;
+}
+
+async function ltsGetJobStatus(jobId) {
+  const resp = await ltsFetch(`/jobs/${jobId}`);
+  if (!resp.ok) {
+    console.error('[lts] getJobStatus: failed,', resp.status);
+    throw new Error(`GET /jobs/{id} ${resp.status}`);
+  }
+  const state = await resp.json();
+  console.log('[lts] getJobStatus: job_id=', jobId, 'status=', state.status, 'attempt=', state.attempt);
+  return state;
+}
+
+async function ltsGetTranscript(jobId) {
+  const resp = await ltsFetch(`/jobs/${jobId}/result`);
+  if (!resp.ok) {
+    console.error('[lts] getTranscript: failed,', resp.status);
+    throw new Error(`GET /jobs/{id}/result ${resp.status}`);
+  }
+  const text = await resp.text();
+  console.log('[lts] getTranscript: job_id=', jobId, 'text length=', text.length, 'preview=', JSON.stringify(text.slice(0, 80)));
+  return text;
+}
+
+async function ltsAck(jobId) {
+  console.log('[lts] ack: POST /jobs/', jobId, '/ack (fire-and-forget)');
+  try {
+    const resp = await ltsFetch(`/jobs/${jobId}/ack`, { method: 'POST' });
+    if (!resp.ok) {
+      console.warn(`[lts] ack HTTP ${resp.status} for job ${jobId}`);
+    } else {
+      console.log('[lts] ack: ok, job_id=', jobId);
+    }
+  } catch (err) {
+    console.warn(`[lts] ack failed for job ${jobId}:`, err);
+  }
+}
+
+async function ltsWriteClipboard(text) {
+  console.log('[lts] clipboard: ensureOffscreen, send lts-copy to offscreen, text length=', text.length);
+  await ensureOffscreen();
+  const reply = await chrome.runtime.sendMessage({ type: 'lts-copy', text });
+  console.log('[lts] clipboard: offscreen reply=', reply);
+  if (!reply || typeof reply.ok !== 'boolean') {
+    throw new Error('offscreen did not reply');
+  }
+  if (!reply.ok) {
+    throw new Error(reply.error || 'clipboard write failed');
+  }
+  return reply;
+}
+
+async function safeReadJson(resp) {
+  try {
+    return await resp.json();
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function handleLtsTranscribeClick(tabId, tabUrl) {
+  console.log('[lts] menu click: tabId=', tabId, 'url=', tabUrl);
+  if (!LTS_AUTH_TOKEN) {
+    await setLtsBadge(tabId, LTS_BADGE.AUTH_ERROR);
+    console.warn('[lts] menu click: auth token missing — click ignored');
+    return;
+  }
+  if (!isYouTubeHost(tabUrl)) {
+    console.warn('[lts] menu click: not a YouTube host, ignored');
+    return;
+  }
+  try {
+    await setLtsBadge(tabId, LTS_BADGE.PROCESSING);
+    const jobId = await ltsSubmit(tabUrl);
+    console.log('[lts] menu click: send lts-start to content, job_id=', jobId);
+    await chrome.tabs.sendMessage(tabId, { type: 'lts-start', jobId });
+  } catch (err) {
+    console.error('[lts] menu click: submit failed:', err);
+    await setLtsBadge(tabId, LTS_BADGE.FAILED);
+  }
+}
+
+async function handleLtsResultReady(tabId, jobId) {
+  console.log('[lts] result-ready: tabId=', tabId, 'job_id=', jobId);
+  try {
+    const text = await ltsGetTranscript(jobId);
+    await ltsWriteClipboard(text);
+    await setLtsBadge(tabId, LTS_BADGE.DONE);
+    await ltsAck(jobId);
+    console.log('[lts] result-ready: completed ok, job_id=', jobId);
+    return true;
+  } catch (err) {
+    console.error('[lts] result-ready: failed,', err);
+    await setLtsBadge(tabId, LTS_BADGE.AUTH_ERROR);
+    return false;
+  }
 }
 

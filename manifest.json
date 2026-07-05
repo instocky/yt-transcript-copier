@@ -10,11 +10,20 @@
     "downloads",
     "alarms",
     "storage",
-    "tabs"
+    "tabs",
+    "offscreen"
   ],
-  "host_permissions": ["https://www.youtube.com/*", "http://127.0.0.1:8765/*"],
+  "host_permissions": ["https://www.youtube.com/*", "http://127.0.0.1:8765/*", "http://127.0.0.1:8766/*", "http://192.168.0.99:8766/*"],
   "background": {
     "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
+    "default_title": "YT Transcript Copier"
   },
   "content_scripts": [
     {

@@ -425,3 +425,79 @@ ${text}
 window.extractAndCopy = extractAndCopy;
 window.extractAndSaveMarkdown = extractAndSaveMarkdown;
 window.extractForBatch = extractForBatch;
+
+// ============================================================================
+// LTS (Local Transcription Service) polling — ADR-0006 / TASK-LTS
+// ============================================================================
+//
+// content script is the polling host (per ADR-0006 §1) — it stays alive while
+// the YouTube tab is open and is not subject to MV3 SW lifetime constraints.
+// On `{type: 'lts-start', jobId}` from SW, kicks off a 5s setInterval that
+// asks SW for job status. On `done`/`failed`, stops polling and tells SW
+// to handle the terminal state. Content script does NOT touch clipboard —
+// gesture is lost on async messaging in MV3 (ADR-0006 §2).
+
+const LTS_POLL_INTERVAL_MS = 5000;
+let ltsPollHandle = null;
+let ltsActiveJobId = null;
+
+function ltsStopPolling() {
+  if (ltsPollHandle !== null) {
+    clearInterval(ltsPollHandle);
+    ltsPollHandle = null;
+  }
+  ltsActiveJobId = null;
+}
+
+async function ltsTick(jobId) {
+  console.log('[lts] poll tick: jobId=', jobId);
+  let reply;
+  try {
+    reply = await chrome.runtime.sendMessage({ type: 'lts-poll', jobId });
+  } catch (err) {
+    console.warn('[lts] poll: sendMessage error:', err);
+    ltsStopPolling();
+    return;
+  }
+  if (!reply || !reply.ok) {
+    console.warn('[lts] poll: error, reply=', reply);
+    ltsStopPolling();
+    return;
+  }
+  console.log('[lts] poll: status=', reply.status, 'jobId=', jobId);
+  if (reply.status === 'done') {
+    ltsStopPolling();
+    console.log('[lts] poll: done -> send lts-result-ready, jobId=', jobId);
+    chrome.runtime.sendMessage({ type: 'lts-result-ready', jobId }).catch(err => {
+      console.warn('[lts] poll: send lts-result-ready failed:', err);
+    });
+  } else if (reply.status === 'failed') {
+    ltsStopPolling();
+    console.log('[lts] poll: failed -> send lts-failed, jobId=', jobId);
+    chrome.runtime.sendMessage({ type: 'lts-failed', jobId }).catch(err => {
+      console.warn('[lts] poll: send lts-failed failed:', err);
+    });
+  }
+  // queued / claimed / processing — keep polling
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== 'lts-start' || typeof msg.jobId !== 'string') {
+    return false;
+  }
+  console.log('[lts] received lts-start, jobId=', msg.jobId, 'interval=', LTS_POLL_INTERVAL_MS, 'ms');
+  ltsStopPolling(); // defensive — kill any prior polling on this tab
+  ltsActiveJobId = msg.jobId;
+  ltsPollHandle = setInterval(() => ltsTick(msg.jobId), LTS_POLL_INTERVAL_MS);
+  // Fire first tick immediately so user sees feedback faster.
+  ltsTick(msg.jobId);
+  sendResponse({ accepted: true });
+  return false; // sync response
+});
+
+window.addEventListener('beforeunload', () => {
+  if (ltsPollHandle !== null) {
+    console.log('[lts] beforeunload: stop polling, jobId=', ltsActiveJobId);
+    ltsStopPolling();
+  }
+});
