@@ -436,17 +436,108 @@ window.extractForBatch = extractForBatch;
 // asks SW for job status. On `done`/`failed`, stops polling and tells SW
 // to handle the terminal state. Content script does NOT touch clipboard —
 // gesture is lost on async messaging in MV3 (ADR-0006 §2).
+//
+// UI feedback: green arrow SVG injected next to the YouTube title on
+// lts-start, flashes 0.5s on each successful poll tick, replaced with a
+// green checkmark on `done` or red cross on `failed`.
 
 const LTS_POLL_INTERVAL_MS = 5000;
+const LTS_FLASH_DURATION_MS = 500;
 let ltsPollHandle = null;
 let ltsActiveJobId = null;
+let ltsFlashTimer = null;
 
 function ltsStopPolling() {
   if (ltsPollHandle !== null) {
     clearInterval(ltsPollHandle);
     ltsPollHandle = null;
   }
+  if (ltsFlashTimer !== null) {
+    clearTimeout(ltsFlashTimer);
+    ltsFlashTimer = null;
+  }
   ltsActiveJobId = null;
+}
+
+function ltsFindTitle() {
+  // YouTube watch-page title selectors — primary + fallback for SPA re-renders.
+  return (
+    document.querySelector('h1.ytd-watch-metadata yt-formatted-string') ||
+    document.querySelector('#title h1 yt-formatted-string') ||
+    document.querySelector('h1 yt-formatted-string')
+  );
+}
+
+function ltsRemoveIndicator() {
+  const title = ltsFindTitle();
+  if (!title) return null;
+  const existing = title.parentElement?.querySelector('.lts-arrow');
+  if (existing) existing.remove();
+  return title;
+}
+
+function ltsMakeSVG(pathD, stroke, opacity) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', '20');
+  svg.setAttribute('height', '20');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.classList.add('lts-arrow');
+  svg.setAttribute(
+    'style',
+    `vertical-align: middle; margin-left: 8px; opacity: ${opacity}; transition: opacity 0.5s ease-in-out;`
+  );
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', pathD);
+  path.setAttribute('stroke', stroke);
+  path.setAttribute('stroke-width', '2.5');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.appendChild(path);
+  return svg;
+}
+
+// SVG path data: right-pointing arrow (→)
+const LTS_ARROW_PATH = 'M4 12h14M14 6l6 6-6 6';
+// SVG path data: checkmark (✓)
+const LTS_CHECK_PATH = 'M5 13l4 4L19 7';
+// SVG path data: cross (✗)
+const LTS_CROSS_PATH = 'M6 6l12 12M18 6L6 18';
+
+function ltsShowInTitle(state /* 'processing' | 'done' | 'failed' */) {
+  const title = ltsRemoveIndicator();
+  if (!title) {
+    console.warn('[lts] UI: YouTube title not found, cannot inject indicator');
+    return;
+  }
+  let svg;
+  if (state === 'processing') {
+    // Arrow starts hidden, will be flashed on each tick
+    svg = ltsMakeSVG(LTS_ARROW_PATH, '#00C853', 0);
+  } else if (state === 'done') {
+    svg = ltsMakeSVG(LTS_CHECK_PATH, '#00C853', 1);
+    svg.setAttribute('style', 'vertical-align: middle; margin-left: 8px;');
+  } else if (state === 'failed') {
+    svg = ltsMakeSVG(LTS_CROSS_PATH, '#D50000', 1);
+    svg.setAttribute('style', 'vertical-align: middle; margin-left: 8px;');
+  } else {
+    return;
+  }
+  title.parentElement.appendChild(svg);
+  console.log('[lts] UI: indicator injected, state=', state);
+}
+
+function ltsFlash() {
+  const title = ltsFindTitle();
+  if (!title) return;
+  const arrow = title.parentElement.querySelector('.lts-arrow');
+  if (!arrow) return;
+  arrow.style.opacity = '1';
+  if (ltsFlashTimer !== null) clearTimeout(ltsFlashTimer);
+  ltsFlashTimer = setTimeout(() => {
+    arrow.style.opacity = '0';
+    ltsFlashTimer = null;
+  }, LTS_FLASH_DURATION_MS);
 }
 
 async function ltsTick(jobId) {
@@ -467,18 +558,22 @@ async function ltsTick(jobId) {
   console.log('[lts] poll: status=', reply.status, 'jobId=', jobId);
   if (reply.status === 'done') {
     ltsStopPolling();
+    ltsShowInTitle('done');
     console.log('[lts] poll: done -> send lts-result-ready, jobId=', jobId);
     chrome.runtime.sendMessage({ type: 'lts-result-ready', jobId }).catch(err => {
       console.warn('[lts] poll: send lts-result-ready failed:', err);
     });
   } else if (reply.status === 'failed') {
     ltsStopPolling();
+    ltsShowInTitle('failed');
     console.log('[lts] poll: failed -> send lts-failed, jobId=', jobId);
     chrome.runtime.sendMessage({ type: 'lts-failed', jobId }).catch(err => {
       console.warn('[lts] poll: send lts-failed failed:', err);
     });
+  } else {
+    // queued / claimed / processing — flash indicator
+    ltsFlash();
   }
-  // queued / claimed / processing — keep polling
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -487,6 +582,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   console.log('[lts] received lts-start, jobId=', msg.jobId, 'interval=', LTS_POLL_INTERVAL_MS, 'ms');
   ltsStopPolling(); // defensive — kill any prior polling on this tab
+  ltsShowInTitle('processing');
   ltsActiveJobId = msg.jobId;
   ltsPollHandle = setInterval(() => ltsTick(msg.jobId), LTS_POLL_INTERVAL_MS);
   // Fire first tick immediately so user sees feedback faster.

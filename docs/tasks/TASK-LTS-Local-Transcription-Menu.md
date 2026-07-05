@@ -379,6 +379,7 @@ placeholder-значением. При случайном коммите — `gi
 | 9 | §7 contract | `POST /jobs` body строго `{video_url: string}`, `X-Auth-Token` на каждом fetch. | `grep -E "video_url|fetch.*LTS_BASE_URL" background.js` — body shape корректный. |
 | 10 | §8 error envelope | Парсер различает `{code, message}` (наш envelope) и `{detail: [...]}` (FastAPI 422). | Manual: вызвать `POST /jobs` с `{"video_url": "not-a-url"}` → badge `⚠`, console ошибка. |
 | 11 | Manifest не сломан | После всех правок `manifest.json` валиден для Chrome. | Открыть `chrome://extensions` → Developer mode → Load unpacked → ошибок нет. |
+| 12 | §6 UI feedback в YouTube title | Зелёная SVG-стрелка вживлена в конец `<h1>` title после `lts-start`. Мигает 0.5s на каждом успешном poll tick (видим opacity 1 → 0 с циклом 5s). Заменяется на зелёный ✓ checkmark при `done` или красный ✗ при `failed`. Элемент остаётся в DOM до reload страницы. | Открыть DevTools → Inspect title → видим `<svg class="lts-arrow">` рядом. На каждые 5s видеть 0.5s flash. После done — checkmark, после failed — cross. |
 
 ## 4. Smoke-план (ручной)
 
@@ -389,13 +390,13 @@ placeholder-значением. При случайном коммите — `gi
 3. В репо расширения: `cp auth.json.example auth.json`, вписать токен.
 4. `chrome://extensions` → Developer mode → Load unpacked → выбрать корень репозитория.
 
-**Тест 1 — happy path** (Acceptance gate для ADR-0006 §2):
+**Тест 1 — happy path** (Acceptance gate для ADR-0006 §2 + UI feedback):
 
 1. Открыть YouTube-видео БЕЗ встроенного транскрипта (любое с отключёнными субтитрами).
 2. Правая кнопка → «🎙 Транскрибировать (LTS)».
-3. Ожидание: badge `⏳` появляется на icon расширения.
-4. Подождать ~10-60 секунд (зависит от длины видео).
-5. Ожидание: badge → `✓`.
+3. Ожидание: badge `⏳` появляется на icon расширения. **+ справа от title видео появляется зелёная SVG-стрелка** (UI feedback).
+4. Подождать ~10-60 секунд (зависит от длины видео). **Каждые 5s видеть короткий flash стрелки (0.5s opacity 1 → 0)**.
+5. Ожидание: badge → `✓`. **+ стрелка заменяется на зелёный ✓ checkmark**, остаётся в DOM до reload страницы.
 6. Открыть любую другую вкладку, вставить (`Ctrl+V`).
 7. **Проверка**: transcript видео вставлен в clipboard. **Это acceptance gate для ADR-0006 §5.1.**
 
@@ -403,12 +404,13 @@ placeholder-значением. При случайном коммите — `gi
 
 1. Повторить Тест 1 дважды подряд (дождаться `✓`, потом снова правая кнопка → меню).
 2. SW console: один `createDocument`, далее `hasDocument() === true` (логировать в SW для отладки).
+3. UI: новая стрелка должна появиться сразу после второго клика (предыдущая ✓ checkmark удаляется на новом `lts-start`).
 
 **Тест 3 — failed job**:
 
 1. Открыть YouTube-видео, чей URL заведомо не обрабатывается (например, удалённое видео).
 2. Правая кнопка → «🎙 Транскрибировать (LTS)».
-3. Ожидание: badge → `✗` через ~30s (после `max_attempts=2`).
+3. Ожидание: badge → `✗` через ~30s (после `max_attempts=2`). **+ стрелка заменяется на красный ✗ cross**, остаётся в DOM до reload.
 
 **Тест 4 — auth missing**:
 

@@ -824,6 +824,44 @@ async function safeReadJson(resp) {
   }
 }
 
+async function sendLtsStartToContent(tabId, jobId) {
+  // Race condition guard: if extension was reloaded but YouTube tab was not,
+  // content script on the tab is stale (no lts-start listener). sendMessage
+  // fails with "Could not establish connection". Inject content.js, give
+  // the listener a moment to register, then retry.
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'lts-start', jobId });
+    console.log('[lts] sendLtsStartToContent: sent on first try');
+    return;
+  } catch (firstErr) {
+    console.warn(
+      '[lts] sendLtsStartToContent: first attempt failed, injecting content.js:',
+      firstErr.message
+    );
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    });
+  } catch (injectErr) {
+    console.error('[lts] sendLtsStartToContent: inject failed:', injectErr);
+    throw injectErr;
+  }
+  // Small delay so the injected script can register its onMessage listener.
+  await new Promise(r => setTimeout(r, 150));
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'lts-start', jobId });
+    console.log('[lts] sendLtsStartToContent: sent after inject');
+  } catch (secondErr) {
+    console.error(
+      '[lts] sendLtsStartToContent: retry after inject failed:',
+      secondErr
+    );
+    throw secondErr;
+  }
+}
+
 async function handleLtsTranscribeClick(tabId, tabUrl) {
   console.log('[lts] menu click: tabId=', tabId, 'url=', tabUrl);
   if (!LTS_AUTH_TOKEN) {
@@ -835,13 +873,21 @@ async function handleLtsTranscribeClick(tabId, tabUrl) {
     console.warn('[lts] menu click: not a YouTube host, ignored');
     return;
   }
+  let jobId = null;
   try {
     await setLtsBadge(tabId, LTS_BADGE.PROCESSING);
-    const jobId = await ltsSubmit(tabUrl);
+    jobId = await ltsSubmit(tabUrl);
     console.log('[lts] menu click: send lts-start to content, job_id=', jobId);
-    await chrome.tabs.sendMessage(tabId, { type: 'lts-start', jobId });
+    await sendLtsStartToContent(tabId, jobId);
   } catch (err) {
-    console.error('[lts] menu click: submit failed:', err);
+    console.error('[lts] menu click: submit/notify failed:', err);
+    if (jobId) {
+      console.error(
+        '[lts] menu click: job_id=', jobId,
+        'created server-side but content script did not pick it up. Transcript may be stuck.',
+        'User should reload YouTube tab and re-trigger, or wait for ack timeout.'
+      );
+    }
     await setLtsBadge(tabId, LTS_BADGE.FAILED);
   }
 }
