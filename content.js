@@ -1,4 +1,20 @@
-﻿async function extractAndCopy() {
+﻿const CLIPBOARD_SUMMARY_SUFFIX = `Дайте Саммари на русском
+## Важно
+- это готовый законченный документ
+- не требуется никаких вступлений, в стиле "Автор сравнивает..."
+
+В конце: #summary
+3–5 тематических тегов
+• на английском
+• ровно два слова
+• lower case
+• с #
+
+##пример тегов
+
+#summary
+#mini pc`;
+async function extractAndCopy() {
   const artifact = await extractTranscriptArtifact();
 
   if (!artifact.ok) {
@@ -6,7 +22,11 @@
     return artifact;
   }
 
-  const textWithMeta = `${artifact.meta.title}\n${artifact.meta.url}\n\n${artifact.transcript}`;
+  const textWithMeta = buildClipboardPayload(
+    artifact.meta.title,
+    artifact.meta.url,
+    artifact.transcript
+  );
 
   await copyToClipboard(textWithMeta);
   const wordCount = artifact.transcript.split(/\s+/).filter(Boolean).length;
@@ -283,6 +303,9 @@ async function copyToClipboard(text) {
   }
 }
 
+function buildClipboardPayload(title, url, transcript) {
+  return `${title}\n${url}\n\n${transcript}\n\n\n${CLIPBOARD_SUMMARY_SUFFIX}`;
+}
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

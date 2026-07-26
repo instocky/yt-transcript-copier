@@ -1,4 +1,4 @@
-﻿const API_BASE = 'http://127.0.0.1:8765';
+const API_BASE = 'http://127.0.0.1:8765';
 const ALARM_NAME = 'ytt-batch-poll';
 const STORAGE_KEY = 'batchRunnerState';
 const PAGE_LOAD_TIMEOUT_MS = 45000;
@@ -23,6 +23,22 @@ const LTS_BADGE = {
 };
 const LTS_MIN_TOKEN_LEN = 16;
 
+const CLIPBOARD_SUMMARY_SUFFIX = `Дайте Саммари на русском
+## Важно
+- это готовый законченный документ
+- не требуется никаких вступлений, в стиле "Автор сравнивает..."
+
+В конце: #summary
+3–5 тематических тегов
+• на английском
+• ровно два слова
+• lower case
+• с #
+
+##пример тегов
+
+#summary
+#mini pc`;
 // Module-scope cached token. Loaded once at onInstalled/onStartup.
 // null means "auth.json missing or invalid" — menu item becomes no-op.
 let LTS_AUTH_TOKEN = null;
@@ -959,6 +975,10 @@ async function handleLtsResultReady(tabId, jobId) {
   }
 }
 
+function appendClipboardSummarySuffix(text) {
+  return `${text}\n\n\n${CLIPBOARD_SUMMARY_SUFFIX}`;
+}
+
 // Prepend {title}\n{url}\n to the raw transcript so LTS clipboard format
 // matches the DOM-extract "Скопировать транскрипт" path. Snapshot was
 // captured at click time in handleLtsTranscribeClick. If the tab is gone or
@@ -970,9 +990,8 @@ async function ltsFormatTranscript(tabId, text) {
   const lines = [meta?.title, meta?.url].filter(Boolean);
   if (lines.length === 0) {
     console.log('[lts] format: no snapshot meta, transcript only, length=', text.length);
-    return text;
+    return appendClipboardSummarySuffix(text);
   }
   console.log('[lts] format: title=', lines[0], 'has_url=', Boolean(lines[1]));
-  return `${lines.join('\n')}\n\n${text}`;
+  return appendClipboardSummarySuffix(`${lines.join('\n')}\n\n${text}`);
 }
-

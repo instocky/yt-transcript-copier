@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.4] - 2026-07-26
+
+### Changed
+
+- **Clipboard copy payload now appends a fixed Russian summary prompt.** Both copy-style menu items ? the built-in `Скопировать транскрипт` action and the `🎙 Транскрибировать (LTS)` fallback ? now append the same postscript after the transcript body. The postscript is separated from the transcript by **two empty lines** and contains strict formatting instructions for a Russian summary plus `#summary` tags. This makes the copied payload immediately ready for downstream LLM prompting without manual paste-time editing.
+
+### Fixed
+
+- **Documentation updated for the new clipboard behavior.** `README.md` now documents the appended summary prompt, the exact clipboard payload shape, and the fact that both copy-style menu items produce the same final payload.
+- **Version metadata bumped to 1.5.4.** `manifest.json` now reflects the release that adds the clipboard summary postscript.
+
+### Notes
+
+- **Scope**: Markdown export remains unchanged. The summary postscript is added only to clipboard-oriented flows.
+- **Implementation**: `content.js` now builds the standard copy payload through a helper, and `background.js` applies the same suffix to the LTS clipboard path so both menu items stay byte-for-byte aligned.
+- **Encoding audit**: ADR markdown files were verified as valid UTF-8 content; the previously observed mojibake came from terminal rendering, not broken repository bytes.
+
+---
+
 ## [1.5.3] - 2026-07-05
 
 ### Fixed

@@ -1,7 +1,7 @@
-﻿{
+{
   "manifest_version": 3,
   "name": "YT Transcript Copier",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Copy or export full YouTube transcripts, including localhost batch orchestration",
   "permissions": [
     "contextMenus",
@@ -13,7 +13,12 @@
     "tabs",
     "offscreen"
   ],
-  "host_permissions": ["https://www.youtube.com/*", "http://127.0.0.1:8765/*", "http://127.0.0.1:8766/*", "http://192.168.0.99:8766/*"],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "http://127.0.0.1:8765/*",
+    "http://127.0.0.1:8766/*",
+    "http://192.168.0.99:8766/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -27,8 +32,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["content.js"]
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ]
     }
   ],
   "icons": {
