@@ -5,7 +5,10 @@ const PAGE_LOAD_TIMEOUT_MS = 45000;
 const EXECUTION_TIMEOUT_MS = 90000;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 const ALARM_PERIOD_MINUTES = 0.5;
-const FALLBACK_INTER_JOB_DELAY_MS = 7000;
+const FALLBACK_INTER_JOB_DELAY_MS = 10500;
+const TRANSCRIPT_MIN_WORDS = 100;
+const BATCH_RETRY_DELAY_MS = 4000;
+const BATCH_MAX_ATTEMPTS = 3;
 
 // --- LTS (Local Transcription Service) integration (ADR-0006, TASK-LTS) ---
 const LTS_BASE_URL = 'http://192.168.0.99:8766';
@@ -82,6 +85,10 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === 'lts-transcribe') {
     void handleLtsTranscribeClick(tab.id, tab.url);
   }
+
+  if (info.menuItemId === 'batch-from-urls') {
+    void openBatchPopup();
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -134,6 +141,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Context-menu batch trigger (TASK-CONTEXT-MENU-BATCH).
+  // Popup (batch.html) sends the URL array; SW runs the queue
+  // sequentially with tabs.create + tabs.remove per job.
+  if (msg?.type === 'BATCH_START' && Array.isArray(msg.urls)) {
+    const reply = runContextMenuBatch(msg.urls);
+    sendResponse({ ok: true, skipped: reply === 'skipped' });
+    return false;
+  }
+
+  if (msg?.type === 'BATCH_CANCEL') {
+    void cancelContextMenuBatch();
+    sendResponse({ ok: true });
+    return false;
+  }
+
   return false;
 });
 
@@ -183,6 +205,15 @@ async function ensureContextMenus() {
   chrome.contextMenus.create({
     id: 'lts-transcribe',
     title: '🎙 Транскрибировать (LTS)',
+    contexts: ['page'],
+    documentUrlPatterns: ['https://www.youtube.com/*'],
+  });
+
+  // Context-menu batch trigger (TASK-CONTEXT-MENU-BATCH) — opens a popup
+  // window with file picker + textarea, no Python dependency.
+  chrome.contextMenus.create({
+    id: 'batch-from-urls',
+    title: '📥 Загрузить URLs (batch)',
     contexts: ['page'],
     documentUrlPatterns: ['https://www.youtube.com/*'],
   });
@@ -377,10 +408,28 @@ async function runNamedActionOnTab(tabId, fnName) {
 }
 
 async function runBatchExtraction(tabId, expectedVideoId) {
-  await chrome.scripting.executeScript({
+  // content.js is auto-injected via `content_scripts` in manifest.json on
+  // every YouTube page, so the function we need is almost always already
+  // present in the tab's content-script isolated world. We probe first and
+  // inject only if missing — re-injecting the same file via executeScript
+  // re-evaluates it in the same isolated world, and the top-level
+  // `const CLIPBOARD_SUMMARY_SUFFIX` declaration throws a
+  // "Identifier ... has already been declared" SyntaxError. That error
+  // doesn't break the call (the first injection's bindings are still in
+  // place), but it spams the chrome://extensions error page and obscures
+  // real extraction failures. The retry loop in `runEphemeralJob` made
+  // the noise 3× per URL and made it visible to the user.
+  const [probe] = await chrome.scripting.executeScript({
     target: { tabId },
-    files: ['content.js'],
+    func: () => typeof window.extractForBatch === 'function',
   });
+
+  if (!probe || probe.result !== true) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    });
+  }
 
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
@@ -994,4 +1043,263 @@ async function ltsFormatTranscript(tabId, text) {
   }
   console.log('[lts] format: title=', lines[0], 'has_url=', Boolean(lines[1]));
   return appendClipboardSummarySuffix(`${lines.join('\n')}\n\n${text}`);
+}
+
+// ============================================================================
+// Context-menu batch (TASK-CONTEXT-MENU-BATCH) — popup window + file picker
+// ============================================================================
+//
+// Trigger: right-click on youtube.com → "📥 Загрузить URLs (batch)".
+// Opens batch.html as a popup window. User picks a .txt file (or pastes URLs)
+// and clicks Start. Popup sends BATCH_START with the URL array; SW processes
+// sequentially with `tabs.create({active:false})` + `tabs.remove()` per job,
+// so each video gets a fresh tab and is closed after the Markdown download
+// completes. Progress is reported to the popup via BATCH_PROGRESS /
+// BATCH_FINISHED broadcasts.
+//
+// Why separate from `processBatchQueue` (localhost API path):
+// - No Python dependency, no `batch_server.py` startup.
+// - No alarm-poll latency — starts immediately on click (MV3 SW can sit idle
+//   for ~30s after the last event before the alarm fires; this path doesn't
+//   depend on the alarm).
+// - One tab per video, closed after — matches the "вкладку нужно закрыть"
+//   requirement. The localhost API path reuses a single `managedTabId`.
+// - No `batch_id` / `job_id` / `inter_job_delay_ms` overhead — the URL
+//   list is the source of truth and lives in the popup only.
+//
+// Reuses: `runBatchExtraction`, `downloadMarkdown`, `waitForTabComplete`,
+// `withTimeout`, `createError`, `createErrorFromPayload`, `serializeError`,
+// `getVideoIdFromUrl`, `sleep`, `FALLBACK_INTER_JOB_DELAY_MS`.
+//
+// ponytail: simultaneous batches (Python API + this popup) are not mutually
+// excluded. The two paths share no state. The Python path's single-flight
+// lives in `batchRunnerState`; this path uses module-scope flags below. If
+// both run at the same time they will fight for the same YouTube tab slots
+// and download directory. Fixing this would mean a unified queue with a
+// shared worker lock — not worth the complexity for the current usage
+// pattern (Python batch is a cron-style flow, popup batch is interactive).
+
+let contextMenuBatchRunning = false;
+let contextMenuBatchCancelRequested = false;
+
+async function openBatchPopup() {
+  const url = chrome.runtime.getURL('batch.html');
+  try {
+    await chrome.windows.create({
+      type: 'popup',
+      url,
+      width: 520,
+      height: 560,
+    });
+  } catch (err) {
+    console.error('[batch-popup] openBatchPopup failed:', err);
+  }
+}
+
+// Returns 'skipped' if another batch is already running so the message
+// handler can report back to the popup; otherwise returns null and the
+// promise runs in the background.
+function runContextMenuBatch(urls) {
+  if (contextMenuBatchRunning) {
+    console.warn('[batch-popup] runContextMenuBatch: already running, skipping');
+    return 'skipped';
+  }
+  void _runContextMenuBatch(urls);
+  return null;
+}
+
+async function _runContextMenuBatch(urls) {
+  contextMenuBatchRunning = true;
+  contextMenuBatchCancelRequested = false;
+  const total = urls.length;
+  let done = 0;
+  let failed = 0;
+  let cancelled = false;
+  console.log('[batch-popup] start: total=', total);
+
+  for (let i = 0; i < urls.length; i++) {
+    if (contextMenuBatchCancelRequested) {
+      cancelled = true;
+      break;
+    }
+    const url = urls[i];
+    broadcastBatch({
+      type: 'BATCH_PROGRESS',
+      done: done + failed,
+      total,
+      current: url,
+      status: 'in_progress',
+    });
+
+    const result = await runEphemeralJob(url);
+    if (result.status === 'done') {
+      done++;
+    } else {
+      failed++;
+      console.warn('[batch-popup] job failed: url=', url, 'error=', result.error);
+    }
+    broadcastBatch({
+      type: 'BATCH_PROGRESS',
+      done: done + failed,
+      total,
+      current: url,
+      status: result.status,
+      filename: result.filename,
+      error: result.error,
+    });
+
+    if (i < urls.length - 1 && !contextMenuBatchCancelRequested) {
+      await sleep(FALLBACK_INTER_JOB_DELAY_MS);
+    }
+  }
+
+  contextMenuBatchRunning = false;
+  contextMenuBatchCancelRequested = false;
+  console.log('[batch-popup] finish: done=', done, 'failed=', failed, 'cancelled=', cancelled);
+  broadcastBatch({ type: 'BATCH_FINISHED', done, total, failed, cancelled });
+}
+
+async function cancelContextMenuBatch() {
+  if (!contextMenuBatchRunning) {
+    console.log('[batch-popup] cancel: no batch running, no-op');
+    return;
+  }
+  contextMenuBatchCancelRequested = true;
+  console.log('[batch-popup] cancel: requested, will stop after current job');
+}
+
+async function runEphemeralJob(url) {
+  let tabId;
+  try {
+    const tab = await chrome.tabs.create({ url, active: false });
+    tabId = tab.id;
+    await waitForTabComplete(tabId, PAGE_LOAD_TIMEOUT_MS);
+
+    // Retry loop: catches two distinct races between `tab.status === 'complete'`
+    // and YouTube's SPA finishing the transcript render.
+    //   1) `extractForBatch` returns ok:false / retryable (e.g. PAGE_NOT_READY)
+    //      — `waitForVideoContext` polled 15s and never saw the expected video_id.
+    //   2) `extractForBatch` returns ok:true with a tiny transcript
+    //      (< TRANSCRIPT_MIN_WORDS) — the page was "ready" by ID but the
+    //      transcript panel itself was still empty / mid-render. content.js's
+    //      own `if (text.length < 10)` gate (content.js:75) is intentionally
+    //      lax so it can fall through to `autoOpenTranscript`; a 20-word
+    //      snippet slips past that gate and gets persisted as a 300-byte
+    //      "transcript" file (YAML frontmatter only). The SW is the right
+    //      place to enforce the higher "is this actually a transcript" bar
+    //      because it owns the user-visible quality contract.
+    let attempt = 0;
+    let artifact = null;
+    let lastError = null;
+
+    while (attempt < BATCH_MAX_ATTEMPTS) {
+      attempt += 1;
+      console.log(
+        `[batch-popup] job attempt ${attempt}/${BATCH_MAX_ATTEMPTS}: url=${url}`
+      );
+
+      artifact = await withTimeout(
+        runBatchExtraction(tabId, getVideoIdFromUrl(url)),
+        EXECUTION_TIMEOUT_MS,
+        () => createError('TIMEOUT', 'Истек execution timeout', true)
+      );
+
+      if (!artifact?.ok) {
+        if (!artifact?.error?.retryable) {
+          // Non-retryable (e.g. NO_TRANSCRIPT — video has no transcript at all)
+          return {
+            status: 'error',
+            error: artifact.error || {
+              type: 'EXTRACTION_FAILED',
+              message: 'Не удалось извлечь транскрипт',
+              retryable: false,
+            },
+          };
+        }
+        lastError = artifact.error;
+        console.warn(
+          `[batch-popup] attempt ${attempt} failed (retryable):`,
+          artifact.error?.message
+        );
+      } else {
+        const wordCount = (artifact.transcript || '')
+          .split(/\s+/)
+          .filter(Boolean).length;
+        if (wordCount >= TRANSCRIPT_MIN_WORDS) {
+          break;
+        }
+        lastError = {
+          type: 'TRANSCRIPT_TOO_SHORT',
+          message: `Транскрипт содержит только ${wordCount} слов (минимум ${TRANSCRIPT_MIN_WORDS}) — страница не успела прогрузиться`,
+          retryable: true,
+        };
+        console.warn(
+          `[batch-popup] attempt ${attempt} returned short transcript: ${wordCount} words`
+        );
+      }
+
+      if (contextMenuBatchCancelRequested) {
+        console.log('[batch-popup] cancel observed between attempts, aborting');
+        return { status: 'error', error: { type: 'CANCELLED', message: 'Отменено пользователем', retryable: false } };
+      }
+      if (attempt < BATCH_MAX_ATTEMPTS) {
+        await sleep(BATCH_RETRY_DELAY_MS);
+      }
+    }
+
+    if (!artifact?.ok) {
+      return { status: 'error', error: lastError || artifact?.error };
+    }
+
+    // Final defence-in-depth check: if the loop exited because every attempt
+    // returned a short transcript (`ok: true` but < TRANSCRIPT_MIN_WORDS),
+    // do NOT persist a 300-byte YAML-frontmatter-only file. The loop sets
+    // `lastError` to `TRANSCRIPT_TOO_SHORT` on each short attempt, so we can
+    // surface that to the popup with the actual word count.
+    const finalWordCount = (artifact.transcript || '')
+      .split(/\s+/)
+      .filter(Boolean).length;
+    if (finalWordCount < TRANSCRIPT_MIN_WORDS) {
+      return { status: 'error', error: lastError };
+    }
+
+    const download = await downloadMarkdown(artifact.filename, artifact.markdown);
+    if (!download.ok) {
+      throw createErrorFromPayload(
+        download.error,
+        'DOWNLOAD_ERROR',
+        'Не удалось сохранить Markdown',
+        true
+      );
+    }
+
+    return { status: 'done', filename: artifact.filename };
+  } catch (error) {
+    return {
+      status: 'error',
+      error: serializeError(error, 'UNKNOWN', true),
+    };
+  } finally {
+    if (tabId !== undefined) {
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch (_e) {
+        // Tab already gone (user closed it manually, or it crashed) — fine.
+      }
+    }
+  }
+}
+
+function broadcastBatch(msg) {
+  // chrome.runtime.sendMessage without a target broadcasts to all extension
+  // views. The popup is the only listener; if it has been closed the
+  // sendMessage promise rejects with "Could not establish connection" —
+  // we swallow that and continue. chrome.runtime.sendMessage is fire-and-
+  // forget by design here (the popup re-syncs via state when it reopens).
+  try {
+    chrome.runtime.sendMessage(msg).catch(() => {});
+  } catch (_e) {
+    // Defensive: sendMessage can throw if the extension context has been
+    // invalidated (e.g. SW shutdown mid-call). Ignore.
+  }
 }

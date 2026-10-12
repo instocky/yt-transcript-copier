@@ -6,6 +6,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.6.2] - 2026-10-12
+
+### Fixed
+
+- **Three real-world bugs surfaced by the 1.6.1 retry loop on a 6-URL batch run** (3 of 6 transcripts came back as 327 / 478 / 366-byte files — basically just the YAML frontmatter — and the `chrome://extensions` error page showed a `SyntaxError: Identifier 'CLIPBOARD_SUMMARY_SUFFIX' has already been declared`).
+
+  **Bug A — `content.js::grabText()` returned description text as the transcript.** The old function had two fallback paths that returned `cleanText(container.innerText)` / `cleanText(descSection.innerText)` when no real transcript segments were on the page. The page's description tab text ("В этом видео Эпизоды Расшифровка видео" — 6 words) passed the `< 10` word gate at `content.js:75`, so `autoOpenTranscript()` was never called and the description was persisted as the transcript. **Fix**: removed the two fallback paths entirely; `grabText()` now only returns text when it actually came from `transcript-segment-view-model`, `ytd-transcript-segment-renderer` inside the transcript container, or the `engagement-panel-searchable-transcript` engagement panel with at least one segment child. The engagement-panel path is also gated on segment presence so a freshly-opened but still-loading panel does not return an empty/short innerText. If no real transcript is on the page, `grabText()` returns `null` and the existing `autoOpenTranscript()` + `waitForText()` flow takes over.
+
+  **Bug B — `runBatchExtraction` re-injected `content.js` on a tab that already had it.** `chrome.scripting.executeScript({files: ['content.js']})` re-evaluates the file in the tab's content-script isolated world, and the top-level `const CLIPBOARD_SUMMARY_SUFFIX` declaration in `content.js` throws `SyntaxError: Identifier ... has already been declared` on second evaluation. The error doesn't break the call (bindings from the manifest's auto-injection are still in place), but it spams the `chrome://extensions` error page. The 1.6.1 retry loop made it 3× per URL and visible to the user. **Fix**: probe `typeof window.extractForBatch === 'function'` first and only re-inject `content.js` when the function is missing (which should never happen in practice on a YouTube tab, but the probe is the right defensive shape).
+
+  **Bug C — SW retry loop didn't reject a short final artifact.** The loop in `runEphemeralJob` set `lastError = {type: 'TRANSCRIPT_TOO_SHORT', ...}` on each short attempt, but the post-loop check was only `if (!artifact?.ok)`. An `ok: true` artifact with 6 words slipped through and was downloaded. **Fix**: added a final `if (finalWordCount < TRANSCRIPT_MIN_WORDS) return { status: 'error', error: lastError }` after the loop, so the existing `TRANSCRIPT_MIN_WORDS` check is the binding contract regardless of how many attempts produced short transcripts.
+
+### Notes
+
+- **Why bugs A and C are different fixes for the same symptom.** Bug A is the root cause: the content script is grabbing the wrong DOM. Bug C is defence-in-depth: the SW should not trust an `ok: true` result without verifying its quality, because the content-script world can change (DOM selectors, YouTube layout changes) in ways the SW doesn't predict. Both are necessary; A fixes the visible failure today, C prevents the same class of bug from silently shipping next time the DOM moves.
+- **Why the SyntaxError from Bug B was never caught in earlier releases.** `runBatchExtraction` (in `processBatchQueue` since 1.4.0) has always re-injected `content.js`. The `localhost` API batch is run rarely (Python script), the previous single-shot call logged one error per URL into the SW console, and the user only opens `chrome://extensions` to read the error page when something is visibly broken. The 1.6.1 retry loop multiplied the noise 3× and made it the loudest line in the error pane, which is how it surfaced here. The fix is the right shape for the underlying issue regardless of visibility.
+- **No new permissions, no new files, no manifest changes** beyond the version bump. The content-script public surface (`window.extractForBatch`, `window.extractAndCopy`, `window.extractAndSaveMarkdown`) is unchanged, so all single-video and LTS paths continue to work as before.
+- **Manual regression check after upgrade**: pick a YouTube video with a Russian-language description and an English transcript (e.g. a recent interview). Right-click → "Сохранить как Markdown". The file should contain the transcript, not the description. Previously this would silently produce a small description-only file in some cases.
+
+---
+
+## [1.6.1] - 2026-10-12
+
+### Fixed
+
+- **Context-menu batch: race between `tab.status === 'complete'` and the YouTube SPA finishing the transcript render.** In 1.6.0 two failure modes were visible in real runs:
+  1. `extractForBatch` returned `ok: false` with type `PAGE_NOT_READY` ("Страница видео не успела перейти в ожидаемое состояние") when `waitForVideoContext` polled for 15 s and never saw the expected `video_id` in the URL.
+  2. `extractForBatch` returned `ok: true` with a transcript of 10–50 words — the page was "ready" by `video_id` but the transcript panel itself was still empty / mid-render. `content.js`'s own `if (text.length < 10)` gate (content.js:75) is intentionally lax so it can fall through to `autoOpenTranscript`; a 20-word snippet slips past that gate and gets persisted as a 300-byte "transcript" file (basically just the YAML frontmatter).
+- **Both modes are now caught in the service worker by a retry loop in `runEphemeralJob`**: up to `BATCH_MAX_ATTEMPTS = 3` attempts, with `BATCH_RETRY_DELAY_MS = 4000` between them. The retry re-injects `content.js` and re-calls `window.extractForBatch(videoId)`, which re-runs the full `waitForVideoContext` + `autoOpenTranscript` + `waitForText` sequence inside the content script. The cancellation flag is checked between attempts so a Cancel click during the retry window still aborts cleanly. After 3 failed attempts the SW returns the last error (either `PAGE_NOT_READY` or a new `TRANSCRIPT_TOO_SHORT` with the actual word count) so the popup shows a real diagnostic instead of a silently-empty file.
+- **`FALLBACK_INTER_JOB_DELAY_MS` bumped `7000 → 10500` (×1.5)** per request. Gives YouTube more time to release the previous tab's resources before the next `tabs.create`. The bump is global — affects both the context-menu batch path and the localhost API path (`processBatchQueue` uses the same constant as a default when the job does not specify `inter_job_delay_ms`).
+
+### Notes
+
+- **Why retry in SW, not content.js**: the threshold for "this is a usable transcript" is a user-visible quality contract, not a parsing detail. The content script's job is "extract whatever is on the page" (so it can fall through to `autoOpenTranscript` on a near-empty read); the SW's job is "decide if what we got is worth saving". Mixing the two creates the kind of "10 words is enough" bugs that produced the 327 / 366-byte files in the 1.6.0 test run.
+- **`TRANSCRIPT_MIN_WORDS = 100` is conservative on purpose.** Most real YouTube transcripts are hundreds to thousands of words. 100 is well below the "obviously truncated" line and well above the "spurious 10-word snippet" line. If real-world runs show legitimate short transcripts (<100 words) being rejected, lower the constant — it is a single line in `background.js`.
+- **Total per-URL budget** with the new retry: up to `3 × EXECUTION_TIMEOUT_MS (90s) + 2 × BATCH_RETRY_DELAY_MS (4s)` ≈ 278 s in the worst case (extraction timeout on every attempt). Realistic budget on a healthy page: ~10–20 s × 1 attempt. For a 50-URL batch this adds ~10 min of headroom in the catastrophic case — still well within Task Scheduler budgets, and the `Done/Error` markers in the popup let the user know what's happening.
+- **No `content.js` changes** in this release. The retry loop is fully contained in the context-menu batch path; the existing `extractForBatch` contract and the existing DOM-watching helpers are untouched, so the context-menu / single-click / LTS paths are unaffected.
+- **Files changed**: `background.js` (constants, `runEphemeralJob` rewrite), `manifest.json` (1.6.0 → 1.6.1). No new permissions, no new files.
+
+---
+
+## [1.6.0] - 2026-10-12
+
+### Added
+
+- **📥 Загрузить URLs (batch)** context-menu item on `youtube.com` pages — opens a small popup window (`batch.html`) with a file picker and a textarea. The user selects a `.txt` file (or pastes URLs), clicks **Start**, and the extension processes the list sequentially: each URL opens in a fresh background tab (`active: false`), the transcript is extracted, the Markdown file is saved through the existing `chrome.downloads` path, and the tab is closed via `chrome.tabs.remove`. No Python, no `batch_server.py`, no `127.0.0.1:8765` API.
+- **Live progress in the popup** — per-URL status (green ✓ on success, red ✗ on error with the error message), a progress bar, a running `done / total` counter, and a **Cancel** button. Closing the popup mid-run does not stop the batch — the worker keeps going in the service worker; re-opening the popup via the context menu does not re-attach to the running batch (planned for a later release).
+- **Cancellation** — clicking **✕ Cancel** sets a `contextMenuBatchCancelRequested` flag in the SW; the loop checks the flag between jobs and after the per-job `sleep`. The currently running job always finishes (it is mid-flight on a real tab); only the next URL is skipped.
+
+### Changed
+
+- `background.js` — added a `Context-menu batch` section at the bottom of the file: `openBatchPopup`, `runContextMenuBatch` / `_runContextMenuBatch`, `cancelContextMenuBatch`, `runEphemeralJob`, `broadcastBatch`. Two new `chrome.runtime.onMessage` branches for `BATCH_START` (with the URL array) and `BATCH_CANCEL`. The new menu item is registered in `ensureContextMenus` alongside the existing three; the click handler dispatches `openBatchPopup()` for `batch-from-urls`.
+- `manifest.json` — version bumped 1.5.4 → 1.6.0. Description updated to mention the context-menu batch. No new permissions, no new `host_permissions`, no `web_accessible_resources` entry required (`batch.html` is loaded as an extension page via `chrome.windows.create({url: chrome.runtime.getURL('batch.html'), type: 'popup'})`, not from a web page).
+- `README.md` — new **Batch usage via context menu (recommended)** section above the existing localhost section; existing **Batch usage via localhost API** is now framed as an alternative. URL-list format, cancellation, and the relationship between the two batch paths are documented.
+
+### Notes
+
+- **Reuse, not duplication**: the new flow calls into the existing `runBatchExtraction` → `downloadMarkdown` chain and reuses `waitForTabComplete`, `withTimeout`, `createError`, `createErrorFromPayload`, `serializeError`, `getVideoIdFromUrl`, `sleep`, and `FALLBACK_INTER_JOB_DELAY_MS`. The only new extraction-flow logic is `runEphemeralJob`, which wraps the same calls in a `tabs.create` + `tabs.remove` envelope.
+- **Tab lifecycle**: each job gets its own tab, opened with `active: false` so the user's current YouTube tab is not stolen. The tab is closed in a `finally` block regardless of success/failure so a failed extraction does not leak zombie tabs. `tabs.remove` errors (tab already gone) are silently swallowed.
+- **Why not popup from the toolbar action**: the action button is intentionally passive in this extension (no `default_popup`); the user wants the trigger on the context menu. `chrome.windows.create({type: 'popup'})` is the right MV3 primitive for "open a small window from a user-gesture handler without putting UI in the toolbar".
+- **No retries per URL** — matches the user's stated flow ("go through the list"). Failures are reported in the popup and the loop continues. If retries are needed later, the same `runEphemeralJob` shape can be wrapped in an N-attempt loop, or a unified queue with the localhost `processBatchQueue` retry/reclaim logic.
+- **Known gap**: the popup does not re-attach to a running batch if it is closed and re-opened. The popup is a view, not a controller — re-opening it after a closed run starts a new run from scratch. Persisting batch state in `chrome.storage.local` and rehydrating on popup open is tracked for a future minor release.
+- **Files added**: `batch.html` (popup markup), `batch.js` (popup controller, ~115 lines), `batch.css` (popup styling, light + dark via `prefers-color-scheme`).
+
+---
+
 ## [1.5.4] - 2026-07-26
 
 ### Changed

@@ -216,6 +216,9 @@ async function waitForText(maxWait = 5000) {
 }
 
 function grabText() {
+  // New layout (post-2024 redesign): segments are `transcript-segment-view-model`
+  // custom elements with a `SegmentText` child. This is the unambiguous
+  // transcript source.
   const newSegments = document.querySelectorAll(
     'transcript-segment-view-model'
   );
@@ -238,6 +241,13 @@ function grabText() {
       .join('\n\n');
   }
 
+  // Old layout: segments live inside `.ytSectionListRendererContents` (the
+  // transcript panel's body) as `ytd-transcript-segment-renderer` children.
+  // If the container exists but has no segments, the page is showing some
+  // OTHER panel there (description, comments, etc.) — do NOT return its
+  // innerText as the transcript. Falling through to null forces the caller
+  // to call `autoOpenTranscript()` and `waitForText()`, which poll until
+  // real segments appear (or 5 s elapses → NO_TRANSCRIPT).
   const container = document.querySelector('.ytSectionListRendererContents');
   if (container) {
     const segments = container.querySelectorAll(
@@ -252,9 +262,9 @@ function grabText() {
         .filter(Boolean)
         .join('\n\n');
     }
-    return cleanText(container.innerText);
   }
 
+  // Top-level segments query — same DOM elements, no container wrapper.
   const segments = document.querySelectorAll('ytd-transcript-segment-renderer');
   if (segments.length > 0) {
     return Array.from(segments)
@@ -266,15 +276,29 @@ function grabText() {
       .join('\n\n');
   }
 
+  // Transcript engagement panel — the right-side panel that opens when
+  // "Show transcript" is clicked. Only treat as transcript if the panel
+  // actually contains segment children; an empty panel (just opened,
+  // transcript still loading) should NOT be returned as text.
   const panel = document.querySelector(
     "ytd-engagement-panel-section-list-renderer[target-id='engagement-panel-searchable-transcript']"
   );
-  if (panel) return cleanText(panel.innerText);
+  if (panel) {
+    const panelSegments = panel.querySelectorAll(
+      'ytd-transcript-segment-renderer, transcript-segment-view-model'
+    );
+    if (panelSegments.length > 0) {
+      return cleanText(panel.innerText);
+    }
+  }
 
-  const descSection = document.querySelector(
-    'ytd-video-description-transcript-section-renderer'
-  );
-  if (descSection) return cleanText(descSection.innerText);
+  // ytd-video-description-transcript-section-renderer removed: this is the
+  // description-area "Show transcript" BUTTON, not the transcript itself.
+  // Its innerText is the video description + the button label, which
+  // passes the `< 10` word check in `extractTranscriptArtifact` and gets
+  // persisted as a fake "transcript" (300-byte YAML-frontmatter-only
+  // .md files). Letting the caller fall through to `autoOpenTranscript`
+  // is the correct behaviour for both single-video and batch paths.
 
   return null;
 }

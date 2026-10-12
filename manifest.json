@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Copier",
-  "version": "1.5.4",
-  "description": "Copy or export full YouTube transcripts, including localhost batch orchestration",
+  "version": "1.6.2",
+  "description": "Copy or export full YouTube transcripts, including context-menu batch from a URL list and localhost batch orchestration",
   "permissions": [
     "contextMenus",
     "clipboardWrite",

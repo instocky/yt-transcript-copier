@@ -6,6 +6,7 @@ Chrome extension that copies the full YouTube transcript to clipboard or exports
 
 - Right-click anywhere on a YouTube video page -> copy transcript to clipboard (formatted as `title` + URL + blank line + transcript body + two blank lines + fixed Russian summary prompt)
 - Right-click anywhere on a YouTube video page -> save transcript as `.md`
+- Right-click anywhere on a YouTube video page -> 📥 Загрузить URLs (batch) — opens a popup window with file picker, runs a URL list sequentially with one tab per video, closes each tab after the Markdown download completes. No Python or localhost server required.
 - Right-click anywhere on a YouTube video page -> 🎙 Транскрибировать (LTS) for videos without built-in transcript (uses local STT service on Mac Mini) — clipboard payload uses the same `title` + URL + transcript + summary-prompt format as the built-in copy action, so paste output is identical regardless of which menu item generated it; shows the same green in-page toast as the built-in copy action when transcription completes (`Скопировано! (~NN слов)`)
 - Auto-opens the transcript panel if it's closed
 - Strips timestamps and preserves paragraph structure
@@ -82,9 +83,46 @@ no-op and the SW console logs `[lts] failed to load auth.json`.
    - `Скопировать транскрипт`
    - `Сохранить как Markdown`
 
-## Batch usage via localhost API
+## Batch usage via context menu (recommended)
 
-The batch mode is designed for a small daily queue without Selenium or Playwright.
+The fastest way to process a list of YouTube URLs — no Python, no server, no alarm-poll latency.
+
+### Flow
+
+1. Right-click anywhere on a YouTube page.
+2. Select **📥 Загрузить URLs (batch)**.
+3. In the popup window, pick a `.txt` file with one URL per line (or paste URLs into the textarea).
+4. Click **▶ Start**.
+5. The popup shows live progress (`done / total`, per-URL status, errors). The extension processes the queue sequentially: each URL opens in a fresh background tab, the transcript is extracted, the Markdown file is saved, and the tab is closed.
+6. You can close the popup mid-run — the batch continues in the background. Re-open via the context menu to see current progress.
+
+### URL list format
+
+- One URL per line, blank lines and `#`-prefixed comments are ignored.
+- Standard `youtube.com/watch?v=…` and `youtu.be/…` URLs work; non-YouTube URLs fail the extraction step and are reported as errors in the popup.
+- Example: see `urls.txt` in this repo.
+
+### Cancellation
+
+Click **✕ Cancel** in the popup. The currently running job finishes, then the batch stops before the next URL.
+
+### Reliability
+
+The batch runner is defensive against two distinct races between `chrome.tabs.onUpdated.status === 'complete'` and the YouTube SPA finishing the transcript render.
+
+- **Per-URL retry loop** — up to 3 attempts per URL, with 4 s between them. Re-injects `content.js` and re-runs the full `extractForBatch` flow on each attempt.
+- **Two failure modes trigger a retry**:
+  1. `extractForBatch` returns `ok: false` with `retryable: true` (e.g. `PAGE_NOT_READY` — the expected `video_id` did not appear in the URL within 15 s).
+  2. `extractForBatch` returns `ok: true` but the transcript is fewer than `TRANSCRIPT_MIN_WORDS` (100) words. This catches the case where the page was "ready" by `video_id` but the transcript panel was still empty / mid-render — a 20-word snippet used to slip past the content-script's own `< 10` word gate and be persisted as a 300-byte YAML-frontmatter-only `.md` file.
+- **Non-retryable errors fail fast** — `NO_TRANSCRIPT` (the video truly has no transcript) is returned immediately without retry, the popup shows "Транскрипт не найден".
+- **Final defence-in-depth check** — even if every attempt returned `ok: true` with a short transcript, the SW rejects the artifact before calling `chrome.downloads.download` if the final word count is below `TRANSCRIPT_MIN_WORDS`.
+- **Inter-URL delay** — `FALLBACK_INTER_JOB_DELAY_MS = 10500` (10.5 s) between URLs gives YouTube time to release the previous tab's resources before the next `tabs.create`.
+
+Files that fail all attempts are **not** downloaded; the popup shows the error and moves to the next URL. Final summary lists `done / total` plus an error count.
+
+## Batch usage via localhost API (alternative)
+
+The localhost API path is intended for headless / scripted runs (e.g. cron, CI) and is unchanged from 1.4.0.
 
 ### Flow
 
@@ -120,9 +158,10 @@ python .\batch_server.py .\urls.txt
 
 ## Files
 
-- `background.js` - context menu actions, localhost orchestration, retries, downloads
+- `background.js` - context menu actions, localhost orchestration, retries, downloads, context-menu batch trigger
 - `content.js` - transcript extraction and Markdown rendering
-- `batch_server.py` - local coordinator API for sequential batch processing
+- `batch.html` / `batch.js` / `batch.css` - popup window for the context-menu batch flow
+- `batch_server.py` - local coordinator API for sequential batch processing via the localhost flow
 
 ## Requirements
 
@@ -134,9 +173,10 @@ python .\batch_server.py .\urls.txt
 
 - Transcript must be available for the video
 - YouTube DOM changes may break extraction
-- MV3 background polling can introduce up to 30 seconds of idle-start latency
+- MV3 background polling can introduce up to 30 seconds of idle-start latency (only affects the localhost API path; the context-menu batch path starts on click)
 - The extension still depends on Chrome Downloads API for the file save path
 - **LTS in-title indicator cleanup**: the green arrow / checkmark / cross is removed automatically on SPA navigation (related-video clicks, back/forward, watch-page transitions) via `watchLtsUrlChanges()` in `content.js`. A full page reload is not required between consecutive LTS jobs on the same tab — the previous job's indicator is cleared when the URL changes.
+- **Context-menu batch vs localhost batch**: the two batch paths do not share a queue or a worker lock. Running both at the same time is not recommended — they will compete for tabs and the same download directory. The context-menu path is interactive and the localhost path is cron-style, so in practice they are not run simultaneously.
 
 ## License
 
